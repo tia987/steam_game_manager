@@ -50,6 +50,25 @@ Setting it up:
 The workflow needs no secrets or tokens. `permissions: contents: write`
 in the file is what lets it create the release.
 
+## Layout
+
+The package lives in `src/nsgm/`, which keeps the importable code apart
+from the build and packaging files around it. Six things point at that
+location and have to agree, so if you move it again, these are what to
+change:
+
+| File | What it points at |
+| --- | --- |
+| `pyproject.toml` | `package-dir = { "" = "src" }` |
+| `nsgm.spec` | `pathex` and the `datas` source path |
+| `run.sh`, `run.bat` | `PYTHONPATH` so a source run can import it |
+| `run.bat` | the portable runtime's `._pth` line |
+| `.github/workflows/build.yml` | `PYTHONPATH` for the pre-build checks |
+
+The interface files under `src/nsgm/web/` are read at runtime and must be
+committed. Inside a built binary they land at `nsgm/web`, which is where
+the server looks, so the runtime lookup does not change with the layout.
+
 ## What to put in the repository
 
 Everything here except `dist/`, `build/` and `runtime/`, which

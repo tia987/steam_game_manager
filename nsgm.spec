@@ -7,11 +7,11 @@ block_cipher = None
 
 analysis = Analysis(
     ["launcher.py"],
-    pathex=["."],
+    pathex=["src"],
     binaries=[],
     # The interface is plain files read at runtime, so they have to travel
     # with the binary rather than being imported.
-    datas=[("nsgm/web", "nsgm/web")],
+    datas=[("src/nsgm/web", "nsgm/web")],
     hiddenimports=["sqlite3"],
     hookspath=[],
     runtime_hooks=[],

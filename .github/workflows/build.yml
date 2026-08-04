@@ -1,0 +1,102 @@
+# Builds a standalone executable for each platform.
+#
+# This is also the answer to "how do I make a Windows .exe" without owning a
+# Windows machine: GitHub runs one for you. Push a tag like v1.0.1 and the
+# finished binaries are attached to a release automatically.
+name: Build
+
+on:
+  push:
+    tags: ["v*"]
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows
+            artifact: nonsteam-game-manager-windows
+            binary: dist/nonsteam-game-manager.exe
+          - os: ubuntu-latest
+            label: Linux
+            artifact: nonsteam-game-manager-linux
+            binary: dist/nonsteam-game-manager
+          - os: macos-latest
+            label: macOS
+            artifact: nonsteam-game-manager-macos
+            binary: dist/nonsteam-game-manager
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the build tool
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Check it imports and starts
+        shell: bash
+        env:
+          PYTHONPATH: src
+        run: |
+          python -c "import nsgm, nsgm.server, nsgm.resolve, nsgm.steam; print('imports fine')"
+          python -c "
+          from nsgm import vdf, steam
+          entry = steam.build_shortcut('Test', '/tmp/game.exe')
+          blob = vdf.binary_dumps({'shortcuts': {'0': entry}})
+          assert vdf.binary_loads(blob)['shortcuts']['0'] == entry
+          assert steam.shortcut_id(entry['Exe'], entry['AppName']) == steam.entry_short_id(entry)
+          print('shortcut round trip fine')
+          "
+
+      - name: Build
+        run: pyinstaller nsgm.spec --clean --noconfirm
+
+      - name: Check the binary runs
+        shell: bash
+        run: |
+          "${{ matrix.binary }}" --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.binary }}
+          if-no-files-found: error
+
+  release:
+    name: Attach to the release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Give each build a distinct name
+        run: |
+          mkdir -p release
+          cp artifacts/nonsteam-game-manager-windows/nonsteam-game-manager.exe \
+             release/nonsteam-game-manager-windows.exe
+          cp artifacts/nonsteam-game-manager-linux/nonsteam-game-manager \
+             release/nonsteam-game-manager-linux
+          cp artifacts/nonsteam-game-manager-macos/nonsteam-game-manager \
+             release/nonsteam-game-manager-macos
+          cd release && sha256sum * > checksums.txt && cat checksums.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true

@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Non-Steam Game Manager</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@10..48,500;10..48,700;10..48,800&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<header class="rail">
+  <div class="rail__brand">
+    <span class="rail__mark" aria-hidden="true"></span>
+    <span class="rail__name">Non&#8209;Steam<em>Game Manager</em></span>
+  </div>
+
+  <div class="rail__group">
+    <label class="field field--inline">
+      <span class="field__label">Account</span>
+      <select id="account" class="input input--select"></select>
+    </label>
+    <p id="steamState" class="pill" data-state="unknown">Checking Steam</p>
+  </div>
+
+  <div class="rail__group rail__group--end">
+    <button id="tabLibrary" class="tab is-active" type="button">Add games</button>
+    <button id="tabManaged" class="tab" type="button">Already added</button>
+    <button id="tabFeeds" class="tab" type="button">What's out now</button>
+    <button id="tabGet" class="tab" type="button">Get software</button>
+    <button id="tabCatalog" class="tab" type="button">Open source</button>
+    <button id="tabUninstall" class="tab" type="button">Uninstall</button>
+    <button id="openSettings" class="icon-button" type="button" title="Settings">Settings</button>
+  </div>
+</header>
+
+<div class="shell">
+
+  <aside class="sidebar" id="sidebar">
+    <section class="panel">
+      <h2 class="panel__title">Where to look</h2>
+      <div id="sourceList" class="checks"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">Game folders</h2>
+        <button class="mini" id="addFolder" type="button">Add</button>
+      </div>
+      <p class="panel__hint">Each subfolder becomes one game.</p>
+      <ul id="folderList" class="stack"></ul>
+    </section>
+
+    <section class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">Finished downloads</h2>
+        <button class="mini" id="incomingPick" type="button">Folder</button>
+      </div>
+      <p class="panel__hint">
+        Where your torrent client saves. Unpacks archives and stages what is
+        ready for Steam.
+      </p>
+      <p class="path" id="incomingPath"></p>
+      <ul id="incomingList" class="stack"></ul>
+      <label class="check" style="margin-top:8px">
+        <input type="checkbox" id="incomingWatch">
+        <span>Watch for finished downloads</span>
+      </label>
+      <button id="incomingStage" class="button button--block" type="button" hidden>
+        Stage ready items
+      </button>
+      <button id="incomingInstalled" class="button button--block" type="button"
+              style="margin-top:6px" hidden>
+        Installer done, add what it installed
+      </button>
+    </section>
+
+    <section class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">ROM systems</h2>
+        <button class="mini" id="addParser" type="button">Add</button>
+      </div>
+      <p class="panel__hint">One entry per console, with its emulator.</p>
+      <ul id="parserList" class="stack"></ul>
+    </section>
+
+    <button id="scanButton" class="button button--primary button--block" type="button">
+      Scan for games
+    </button>
+    <p id="scanNotes" class="notes" hidden></p>
+  </aside>
+
+  <main class="stage" id="stage">
+
+    <section id="libraryView">
+      <div class="toolbar">
+        <input id="filter" class="input input--search" type="search"
+               placeholder="Filter by title or system" autocomplete="off">
+        <div class="toolbar__actions">
+          <button id="selectAll" class="button" type="button">Select all</button>
+          <button id="matchArt" class="button button--accent" type="button">Find covers</button>
+        </div>
+      </div>
+
+      <p id="wallSummary" class="summary" hidden></p>
+
+      <div id="empty" class="empty">
+        <h2 class="empty__title">Nothing on the shelf yet</h2>
+        <p class="empty__body">
+          Pick your launchers on the left, add a folder or a ROM system,
+          then scan. Everything found lands here as a cover you can review
+          before it reaches Steam.
+        </p>
+      </div>
+
+      <div id="wall" class="wall" hidden></div>
+    </section>
+
+    <section id="managedView" hidden>
+      <div class="toolbar">
+        <p class="summary" id="managedSummary">Shortcuts this tool added.</p>
+        <div class="toolbar__actions">
+          <button id="removeSelected" class="button button--danger" type="button">
+            Remove from Steam
+          </button>
+        </div>
+      </div>
+      <div id="managedWall" class="wall"></div>
+    </section>
+
+    <section id="feedsView" hidden>
+      <div class="toolbar">
+        <input id="feedFilter" class="input input--search" type="search"
+               placeholder="Filter headlines" autocomplete="off">
+        <nav class="chips" id="feedTags"></nav>
+        <div class="toolbar__actions">
+          <button id="linkDownload" class="button" type="button">Get from a link</button>
+          <button id="manageFeeds" class="button" type="button">Manage feeds</button>
+          <button id="refreshFeeds" class="button button--accent" type="button">Refresh</button>
+        </div>
+      </div>
+      <p class="summary" id="feedSummary">
+        Deals, giveaways and releases from the feeds you follow. Nothing is
+        downloaded here &mdash; every headline opens on the original site.
+      </p>
+      <p id="feedNotes" class="notes" hidden></p>
+      <ul class="feedlist" id="feedList"></ul>
+    </section>
+
+    <section id="catalogView" hidden>
+      <div class="toolbar">
+        <input id="catalogFilter" class="input input--search" type="search"
+               placeholder="Filter by name or description" autocomplete="off">
+        <nav class="chips" id="catalogTags"></nav>
+      </div>
+      <p class="summary" id="catalogSummary"></p>
+      <div class="cards" id="catalogList"></div>
+    </section>
+
+    <section id="uninstallView" hidden>
+      <div class="toolbar">
+        <input id="programFilter" class="input input--search" type="search"
+               placeholder="Filter installed programs" autocomplete="off">
+        <div class="toolbar__actions">
+          <button id="reloadPrograms" class="button" type="button">Reload list</button>
+        </div>
+      </div>
+      <p class="summary" id="programSummary">
+        Everything Windows lists under Programs and Features. Removing one runs
+        its own uninstaller, then offers to clear out what it leaves behind.
+      </p>
+      <ul class="proglist" id="programList"></ul>
+    </section>
+
+    <section id="getView" hidden>
+      <div class="toolbar">
+        <input id="getUrl" class="input input--search" type="text"
+               placeholder="Paste a site or project address, or type a program name"
+               autocomplete="off" style="max-width:520px">
+        <div class="toolbar__actions">
+          <button id="getResolve" class="button button--primary" type="button">Find</button>
+          <button id="getRefresh" class="button" type="button" title="Fetch again, ignoring what was cached">Refresh</button>
+          <button id="getWatch" class="button" type="button">Watch</button>
+        </div>
+      </div>
+
+      <details class="watchbox" id="watchBox">
+        <summary>
+          Watched pages
+          <span class="watchbox__count" id="watchCount"></span>
+        </summary>
+        <p class="panel__hint">
+          Checked on demand. A page counts as changed only when the files it
+          offers change, so rotating banners stay quiet.
+        </p>
+        <div class="toolbar">
+          <button id="watchCheck" class="button button--accent" type="button">Check all now</button>
+        </div>
+        <ul class="stack" id="watchList"></ul>
+      </details>
+
+      <p id="getNote" class="notes" hidden></p>
+
+      <div id="getEmpty" class="empty">
+        <h2 class="empty__title">Find a program</h2>
+        <p class="empty__body">
+          Give it a project page and it lists the files to download. Give it
+          a site that catalogues software and it collects every program
+          listed, page after page, so you can search the whole thing here.
+          Or just type a name to look for a project.
+        </p>
+        <p class="empty__body" style="margin-top:10px">Try one of these:</p>
+        <div class="chips" id="getExamples"></div>
+      </div>
+
+      <div id="getSearch"></div>
+
+      <div id="getIndex" hidden>
+        <div class="toolbar">
+          <p class="summary" id="indexSummary" style="margin:0"></p>
+          <div class="toolbar__actions">
+            <input id="indexFilter" class="input input--search" type="search"
+                   placeholder="Search these programs" style="max-width:240px">
+            <button id="indexMore" class="button" type="button">Keep scanning</button>
+            <button id="indexClose" class="button" type="button">Leave catalogue</button>
+          </div>
+        </div>
+        <ul class="stack" id="indexList"></ul>
+      </div>
+
+      <div id="getFiles" hidden>
+        <div class="toolbar" id="getFilters">
+          <button id="getBack" class="button" type="button" hidden>Back to list</button>
+          <nav class="chips" id="getKinds"></nav>
+          <input id="getFilter" class="input input--search" type="search"
+                 placeholder="Filter file names" style="max-width:220px">
+        </div>
+        <div id="getResult"></div>
+      </div>
+
+    </section>
+
+  </main>
+</div>
+
+<footer class="dock" id="dock" hidden>
+  <div class="dock__count">
+    <strong id="dockNumber">0</strong>
+    <span id="dockLabel">games selected</span>
+  </div>
+  <label class="check check--inline">
+    <input type="checkbox" id="overwriteArt">
+    <span>Replace artwork that already exists</span>
+  </label>
+  <label class="check check--inline">
+    <input type="checkbox" id="preferDirect">
+    <span>Skip launchers, run the game directly</span>
+  </label>
+  <button id="applyButton" class="button button--primary" type="button">Add to Steam</button>
+</footer>
+
+<!-- artwork picker ------------------------------------------------------->
+<dialog id="artDialog" class="sheet">
+  <form method="dialog" class="sheet__close"><button class="icon-button" value="close">Close</button></form>
+  <h2 class="sheet__title" id="artTitle">Artwork</h2>
+  <div class="sheet__search">
+    <input id="artSearch" class="input" type="search" placeholder="Search SteamGridDB">
+    <button id="artSearchGo" class="button" type="button">Search</button>
+  </div>
+  <div id="artResults" class="chips"></div>
+  <nav class="segments" id="artKinds"></nav>
+  <div id="artGrid" class="artgrid"></div>
+</dialog>
+
+<!-- folder browser ------------------------------------------------------->
+<dialog id="browseDialog" class="sheet sheet--narrow">
+  <form method="dialog" class="sheet__close"><button class="icon-button" value="close">Close</button></form>
+  <h2 class="sheet__title" id="browseTitle">Choose a folder</h2>
+  <p class="path" id="browsePath"></p>
+  <div class="drives" id="browseDrives"></div>
+  <ul class="browse" id="browseList"></ul>
+  <div class="sheet__foot">
+    <button id="browseUp" class="button" type="button">Up one level</button>
+    <button id="browsePick" class="button button--primary" type="button">Use this folder</button>
+  </div>
+</dialog>
+
+<!-- rom parser editor ---------------------------------------------------->
+<dialog id="parserDialog" class="sheet sheet--narrow">
+  <form method="dialog" class="sheet__close"><button class="icon-button" value="close">Close</button></form>
+  <h2 class="sheet__title">ROM system</h2>
+  <div class="form" id="parserForm">
+    <label class="field"><span class="field__label">Start from</span>
+      <select id="pPreset" class="input input--select"></select></label>
+    <label class="field"><span class="field__label">Name</span>
+      <input id="pName" class="input" type="text" placeholder="Super Nintendo"></label>
+    <label class="field"><span class="field__label">ROM folder</span>
+      <span class="field__row">
+        <input id="pDir" class="input" type="text" placeholder="D:\ROMs\SNES">
+        <button class="button" id="pDirPick" type="button">Browse</button>
+      </span></label>
+    <label class="field"><span class="field__label">File extensions</span>
+      <input id="pExt" class="input input--mono" type="text" placeholder="sfc, smc, zip"></label>
+    <label class="field"><span class="field__label">Emulator</span>
+      <span class="field__row">
+        <input id="pEmu" class="input" type="text" placeholder="retroarch.exe">
+        <button class="button" id="pEmuPick" type="button">Browse</button>
+      </span></label>
+    <label class="field"><span class="field__label">Launch arguments</span>
+      <input id="pArgs" class="input input--mono" type="text" placeholder='-L "cores/snes9x_libretro.dll" "{rom}"'>
+      <span class="field__note">{rom} is the ROM path. Also available: {romBase}, {romDir}, {emuDir}.</span></label>
+    <label class="check"><input type="checkbox" id="pRecursive"><span>Search subfolders</span></label>
+    <label class="check"><input type="checkbox" id="pMulti"><span>Collapse multi&#8209;disc sets into one entry</span></label>
+  </div>
+  <div class="sheet__foot">
+    <button id="pDelete" class="button button--danger" type="button">Delete</button>
+    <button id="pSave" class="button button--primary" type="button">Save system</button>
+  </div>
+</dialog>
+
+<!-- feed manager ---------------------------------------------------------->
+<dialog id="feedsDialog" class="sheet sheet--narrow">
+  <form method="dialog" class="sheet__close"><button class="icon-button" value="close">Close</button></form>
+  <h2 class="sheet__title">Feeds</h2>
+  <p class="panel__hint">
+    Any address that serves RSS or Atom works. Most sites link theirs in the
+    footer, often as an orange icon or a link marked RSS.
+  </p>
+  <ul class="stack" id="feedRows"></ul>
+  <div class="form" style="margin-top:16px">
+    <label class="field"><span class="field__label">Add a feed</span>
+      <span class="field__row">
+        <input id="newFeedUrl" class="input input--mono" type="text"
+               placeholder="site.com  or  site.com/feed.xml">
+        <button id="findFeed" class="button button--accent" type="button">Find</button>
+      </span>
+      <span class="field__note">
+        Paste either the feed address or just the site &mdash; it will look for a
+        feed and check it works before you add it.
+      </span></label>
+    <div id="feedCandidates"></div>
+  </div>
+  <datalist id="tagOptions">
+    <option value="Free"></option><option value="Deals"></option>
+    <option value="Sales"></option><option value="New"></option>
+    <option value="News"></option>
+  </datalist>
+  <div class="sheet__foot">
+    <button id="restoreFeeds" class="button" type="button">Restore defaults</button>
+    <button id="saveFeeds" class="button button--primary" type="button">Save feeds</button>
+  </div>
+</dialog>
+
+<!-- leftover sweep -------------------------------------------------------->
+<dialog id="sweepDialog" class="sheet sheet--narrow">
+  <form method="dialog" class="sheet__close"><button class="icon-button" value="close">Close</button></form>
+  <h2 class="sheet__title" id="sweepTitle">Leftovers</h2>
+  <p class="panel__hint" id="sweepIntro"></p>
+  <ul class="stack" id="sweepList"></ul>
+  <div class="sheet__foot">
+    <button id="sweepSkip" class="button" type="button">Leave them</button>
+    <button id="sweepGo" class="button button--danger" type="button">Delete selected</button>
+  </div>
+</dialog>
+
+<!-- downloads ------------------------------------------------------------>
+<dialog id="grabDialog" class="sheet sheet--narrow">
+  <form method="dialog" class="sheet__close"><button class="icon-button" value="close">Close</button></form>
+  <h2 class="sheet__title">Download a file</h2>
+  <div class="form">
+    <label class="field"><span class="field__label">Direct link</span>
+      <input id="grabUrl" class="input input--mono" type="url" placeholder="https://site.com/setup.exe">
+      <span class="field__note">
+        Must point straight at a file. A store or forum page will be refused &mdash;
+        open it in a browser and copy the actual download link.
+      </span></label>
+    <label class="field"><span class="field__label">Save into</span>
+      <span class="field__row">
+        <input id="grabFolder" class="input input--mono" type="text">
+        <button class="button" id="grabPick" type="button">Browse</button>
+      </span></label>
+  </div>
+  <div id="grabDone" hidden>
+    <p class="summary" id="grabResult"></p>
+    <div class="sheet__foot" style="justify-content:flex-start">
+      <button id="grabReveal" class="button" type="button">Open folder</button>
+      <button id="grabRun" class="button button--primary" type="button">Run installer</button>
+    </div>
+  </div>
+  <div class="sheet__foot">
+    <button id="grabGo" class="button button--primary" type="button">Download</button>
+  </div>
+</dialog>
+
+<!-- settings ------------------------------------------------------------->
+<dialog id="settingsDialog" class="sheet sheet--narrow">
+  <form method="dialog" class="sheet__close"><button class="icon-button" value="close">Close</button></form>
+  <h2 class="sheet__title">Settings</h2>
+  <div class="form">
+    <label class="field"><span class="field__label">SteamGridDB API key</span>
+      <input id="apiKey" class="input input--mono" type="password" placeholder="Paste your key">
+      <span class="field__note">Free from steamgriddb.com, under Preferences &rarr; API.</span></label>
+    <fieldset class="field">
+      <legend class="field__label">Artwork to download</legend>
+      <div id="artKindChecks" class="checks"></div>
+    </fieldset>
+    <label class="check"><input type="checkbox" id="allowAnimated"><span>Include animated artwork</span></label>
+    <label class="check"><input type="checkbox" id="allowNsfw"><span>Include artwork marked adult</span></label>
+    <label class="check"><input type="checkbox" id="addTag"><span>Tag added games so they are easy to find</span></label>
+    <label class="field"><span class="field__label">GitHub token (optional)</span>
+      <input id="githubToken" class="input input--mono" type="password" placeholder="Only needed for the Open source tab">
+      <span class="field__note">
+        GitHub allows 60 anonymous requests an hour, which the catalogue can use up.
+        A read-only token raises that to 5000. No scopes required.
+      </span></label>
+    <p class="path" id="configPath"></p>
+  </div>
+  <div class="sheet__foot">
+    <button id="saveSettings" class="button button--primary" type="button">Save settings</button>
+  </div>
+</dialog>
+
+<!-- progress ------------------------------------------------------------->
+<dialog id="jobDialog" class="sheet sheet--narrow">
+  <h2 class="sheet__title" id="jobTitle">Working</h2>
+  <div class="meter"><div class="meter__fill" id="jobFill"></div></div>
+  <p class="job__message" id="jobMessage"></p>
+  <pre class="job__log" id="jobLog"></pre>
+  <div class="sheet__foot">
+    <button id="jobClose" class="button button--primary" type="button" disabled>Close</button>
+  </div>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

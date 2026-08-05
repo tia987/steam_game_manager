@@ -180,6 +180,10 @@ async function boot() {
   $("overwriteArt").checked = !!S.settings.overwrite_art;
   $("preferDirect").checked = !!S.settings.prefer_direct;
   $("configPath").textContent = `Settings live in ${S.boot.config_dir}`;
+  const brand = document.querySelector(".rail__name em");
+  // Which build is actually running. Without this there is no way to
+  // tell a fixed copy from the one it replaced.
+  if (brand && S.boot.version) brand.textContent = `GAME MANAGER  v${S.boot.version}`;
 
   const presets = await api("/api/presets");
   const select = $("pPreset");

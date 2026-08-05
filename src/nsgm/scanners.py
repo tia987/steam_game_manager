@@ -542,7 +542,20 @@ def scan_installed_programs(notes: list[str]) -> list[dict]:
     seen: set[str] = set()
     skip_publisher = re.compile(
         r"(?i)microsoft|nvidia|amd|intel|realtek|adobe|google|mozilla|oracle|python|"
-        r"apple|dell|hp inc|lenovo|logitech|corsair|razer|vmware|citrix|autodesk"
+        r"apple|dell|hp inc|lenovo|logitech|corsair|razer|vmware|citrix|autodesk|"
+        r"asus|msi|gigabyte|asrock|synaptics|qualcomm|broadcom|nahimic|sonic studio"
+    )
+    # Drivers, services and runtimes are not games and never will be. The
+    # entry for this program itself is not one either, and offering to add
+    # a shortcut to the thing making the offer is plainly wrong.
+    skip_name = re.compile(
+        r"(?i)\b(driver|drivers|service|services|runtime|redistributable|"
+        r"framework|sdk|toolkit|agent|host|bus|controller|chipset|firmware|"
+        r"update|updater|installer|uninstall|codec|plugin|extension|"
+        r"visual c\+\+|\.net|directx|vulkan|openal|java|dependency|"
+        r"non-steam game manager|amd software|radeon|geforce|physx|adrenalin|"
+        r"armoury crate|myasus|realtek|nahimic|system software|"
+        r"control panel|management console)\b"
     )
     for hive, path in (
         ("HKLM", r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
@@ -557,6 +570,8 @@ def scan_installed_programs(notes: list[str]) -> list[dict]:
             if values.get("SystemComponent") == 1 or values.get("ParentKeyName"):
                 continue
             if skip_publisher.search(str(values.get("Publisher", ""))):
+                continue
+            if skip_name.search(title):
                 continue
             if not Path(install).is_dir():
                 continue

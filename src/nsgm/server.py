@@ -948,6 +948,8 @@ class Handler(BaseHTTPRequestHandler):
             "platform": platform.system(),
             "art_kinds": sgdb.ART_ORDER,
             "config_dir": str(library.config_dir()),
+            "version": __import__("nsgm").__version__,
+
             "windowed": bool(STATE.get("windowed")),
         }
 

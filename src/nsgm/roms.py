@@ -207,7 +207,7 @@ def run_parser(parser: dict, notes: list[str]) -> list[dict]:
     if warning:
         notes.append(f"{parser.get('name', 'ROM system')}: {warning}")
 
-    core_problem = core_warning(template)
+    core_problem = core_warning(str(parser.get("args") or ""))
     if core_problem:
         notes.append(f"{parser.get('name', 'ROM system')}: {core_problem}")
     template = str(parser.get("args") or '"{rom}"')

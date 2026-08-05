@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import vdf
+from . import proc
 
 STEAM_ID64_BASE = 76561197960265728
 BACKUPS_KEPT = 12
@@ -163,12 +164,12 @@ def steam_is_running() -> bool:
     """Best effort check. Writing shortcuts.vdf under a live client loses data."""
     try:
         if platform.system() == "Windows":
-            out = subprocess.run(
+            out = proc.run(
                 ["tasklist", "/FI", "IMAGENAME eq steam.exe", "/NH"],
                 capture_output=True, text=True, timeout=8,
             ).stdout.lower()
             return "steam.exe" in out
-        return subprocess.run(
+        return proc.run(
             ["pgrep", "-x", "steam"], capture_output=True, timeout=8
         ).returncode == 0
     except (OSError, subprocess.SubprocessError):

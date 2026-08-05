@@ -23,6 +23,7 @@ import zipfile
 from pathlib import Path
 
 from .scanners import JUNK_DIR, pick_executable, prettify
+from . import proc
 
 ARCHIVES = {".zip", ".7z", ".rar", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".zst"}
 DISC_IMAGES = {".iso", ".img", ".bin", ".cue", ".chd", ".mdf", ".nrg"}
@@ -140,7 +141,7 @@ def unpack(path: str, into: str = "", keep_archive: bool = True) -> dict:
             command = ([tool, "x", str(archive), f"-o{target}", "-y"]
                        if tool.startswith("7z")
                        else [tool, "-xf", str(archive), "-C", str(target)])
-            result = subprocess.run(command, capture_output=True, text=True, timeout=1800)
+            result = proc.run(command, capture_output=True, text=True, timeout=1800)
             if result.returncode != 0:
                 raise PipelineError(
                     f"{tool} could not unpack {archive.name}: "
@@ -322,9 +323,9 @@ def launch(path: str) -> dict:
         if os.name == "nt":
             os.startfile(str(target))  # noqa: S606 - hands it to the shell
         elif shutil.which("xdg-open"):
-            subprocess.Popen(["xdg-open", str(target)])
+            proc.Popen(["xdg-open", str(target)])
         else:
-            subprocess.Popen([str(target)])
+            proc.Popen([str(target)])
     except (OSError, subprocess.SubprocessError) as exc:
         raise PipelineError(f"Could not start {target.name}: {exc}") from exc
     return {"started": str(target)}

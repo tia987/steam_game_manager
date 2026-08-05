@@ -25,6 +25,8 @@ import platform
 import re
 import sqlite3
 import subprocess
+
+from . import proc
 from pathlib import Path
 
 IS_WINDOWS = platform.system() == "Windows"
@@ -748,7 +750,7 @@ def scan_desktop_entries(notes: list[str]) -> list[dict]:
 
 def scan_flatpak(notes: list[str]) -> list[dict]:
     try:
-        result = subprocess.run(
+        result = proc.run(
             ["flatpak", "list", "--app", "--columns=application,name"],
             capture_output=True, text=True, timeout=25,
         )

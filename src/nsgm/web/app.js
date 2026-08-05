@@ -2232,7 +2232,23 @@ async function restoreSession() {
 async function checkForUpdate() {
   try {
     const info = await api("/api/update");
-    if (!info.available) return;
+    S.update = info;
+    if (!info.available) {
+      // A check that could not run and a check that found nothing looked
+      // identical: no badge either way. Say which it was.
+      if (!info.checked || info.note) {
+        const badge = $("updateBadge");
+        badge.hidden = false;
+        badge.textContent = "Update check failed";
+        badge.style.borderColor = "var(--dimmer)";
+        badge.style.color = "var(--dim)";
+        badge.title = info.note || "Could not reach GitHub.";
+        badge.addEventListener("click", () => alert(
+          `Running version ${info.current || "unknown"}.\n\n` +
+          `${info.note || "The update check could not complete."}`));
+      }
+      return;
+    }
     const badge = $("updateBadge");
     badge.hidden = false;
     badge.textContent = `Update to ${info.version}`;

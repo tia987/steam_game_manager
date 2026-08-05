@@ -35,6 +35,7 @@ from html.parser import HTMLParser
 from pathlib import PurePosixPath
 
 from . import archive, catalog, torrents
+from . import proc
 
 USER_AGENT = "NonSteamGameManager/1.0 (+local download helper)"
 MAX_PAGE = 4 * 1024 * 1024
@@ -107,9 +108,9 @@ def open_magnet(uri: str) -> dict:
             import os
             os.startfile(uri)  # noqa: S606 - the OS picks the handler
         elif system == "Darwin":
-            subprocess.Popen(["open", uri])
+            proc.Popen(["open", uri])
         else:
-            subprocess.Popen(["xdg-open", uri])
+            proc.Popen(["xdg-open", uri])
     except (OSError, subprocess.SubprocessError) as exc:
         raise ResolveError(
             "No torrent client is registered for magnet links on this computer."

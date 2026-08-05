@@ -187,8 +187,13 @@ def collect_games(settings: dict) -> tuple[list[dict], list[str]]:
                         if name:
                             existing_titles.add(name)
                         exe = str(entry.get("Exe", "")).strip().strip('"').lower()
+                        args = str(entry.get("LaunchOptions", "")).strip().lower()
                         if exe:
-                            existing_exes.add(exe)
+                            # Keyed on the whole command, not the program. Every
+                            # ROM in a system shares one emulator, so matching on
+                            # the executable alone meant importing a single game
+                            # hid every other game that used it.
+                            existing_exes.add((exe, args))
             except (OSError, ValueError):
                 pass
 
@@ -202,7 +207,8 @@ def collect_games(settings: dict) -> tuple[list[dict], list[str]]:
                 continue
             if title and title in existing_titles:
                 continue
-            if exe and exe in existing_exes:
+            args = str(game.get("args", "")).strip().lower()
+            if exe and (exe, args) in existing_exes:
                 continue
             kept.append(game)
         games = kept

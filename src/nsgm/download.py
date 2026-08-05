@@ -18,6 +18,8 @@ import platform
 import re
 import subprocess
 import time
+
+from . import proc
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -212,11 +214,11 @@ def reveal(path: str | Path) -> dict:
         return {"ok": False, "message": "That file is no longer there."}
     try:
         if IS_WINDOWS:
-            subprocess.Popen(["explorer", "/select,", str(target)])
+            proc.Popen(["explorer", "/select,", str(target)])
         elif platform.system() == "Darwin":
-            subprocess.Popen(["open", "-R", str(target)])
+            proc.Popen(["open", "-R", str(target)])
         else:
-            subprocess.Popen(["xdg-open", str(target.parent)])
+            proc.Popen(["xdg-open", str(target.parent)])
         return {"ok": True, "message": ""}
     except OSError as exc:
         return {"ok": False, "message": f"Could not open the folder ({exc})."}

@@ -1,7 +1,6 @@
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
-
 [project]
 name = "nonsteam-game-manager"
 version = "1.0.0"
@@ -21,15 +20,11 @@ classifiers = [
 # No runtime dependencies on purpose: the standard library covers all of it,
 # so the app runs from a fresh Python with nothing to install.
 dependencies = []
-
 [project.scripts]
 nsgm = "nsgm.__main__:main"
-
 [project.optional-dependencies]
 build = ["pyinstaller>=6.0"]
-
 [tool.setuptools]
 packages = ["nsgm"]
-
 [tool.setuptools.package-data]
 nsgm = ["web/*"]

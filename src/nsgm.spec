@@ -1,8 +1,6 @@
 # PyInstaller build description.
 #   pyinstaller nsgm.spec
-# Produces a single self-contained executable in dist/.
-from PyInstaller.utils.hooks import collect_data_files
-
+# Paths are relative to this file, which sits beside the nsgm package.
 block_cipher = None
 
 analysis = Analysis(

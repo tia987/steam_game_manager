@@ -52,28 +52,32 @@ in the file is what lets it create the release.
 
 ## Layout
 
-`nsgm/` at the root is the package, and its name is the import name:
-`import nsgm` works because the folder is called `nsgm`. That folder
-cannot be flattened away — losing it would rename the package after
-whatever directory replaced it.
+The package lives at `src/nsgm/`. Two levels, and both are needed:
 
-A `src/nsgm/` arrangement is also common and equally correct; it keeps
-the importable code apart from the packaging files. Either works. What
-does not work is putting the modules directly in a `src/` folder, since
-the package would then be called `src` and would collide with every other
-project that did the same on install.
+- `src/` keeps the importable code apart from the packaging files. This
+  is a common convention and is optional.
+- `nsgm/` is the package itself. Its name *is* the import name, which is
+  why `import nsgm` works. This one cannot be removed: whatever folder
+  holds the modules becomes the package, so putting them straight into
+  `src/` would create a package called `src` — importable as
+  `import src.server`, and installed as a top-level `src` that collides
+  with every other project doing the same.
 
-If you do move it, these are the files that have to agree:
+Five files have to agree on where the code sits. If the layout ever
+changes, these are what to change with it:
 
 | File | What it points at |
 | --- | --- |
-| `pyproject.toml` | `packages`, and `package-dir` if the code is nested |
+| `pyproject.toml` | `package-dir = { "" = "src" }` |
 | `nsgm.spec` | `pathex` and the `datas` source path |
-| `run.sh`, `run.bat` | whether `PYTHONPATH` needs setting to import it |
+| `run.sh`, `run.bat` | `PYTHONPATH`, so a source run can import it |
 | `run.bat` | the portable runtime's `._pth` line |
-| `.github/workflows/build.yml` | the pre-build import check |
+| `.github/workflows/build.yml` | `PYTHONPATH` for the pre-build check |
 
-The interface files under `nsgm/web/` are read at runtime and must be
+A mismatch here shows up as `ModuleNotFoundError: No module named
+'nsgm'` at the "Check it imports and starts" step, before the build runs.
+
+The interface files under `src/nsgm/web/` are read at runtime and must be
 committed. Inside a built binary they land at `nsgm/web`, which is where
 the server looks, so that lookup does not change with the layout.
 

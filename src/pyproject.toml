@@ -29,7 +29,6 @@ nsgm = "nsgm.__main__:main"
 build = ["pyinstaller>=6.0"]
 
 [tool.setuptools]
-package-dir = { "" = "src" }
 packages = ["nsgm"]
 
 [tool.setuptools.package-data]

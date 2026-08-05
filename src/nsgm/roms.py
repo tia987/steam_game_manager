@@ -112,6 +112,29 @@ def _expand(template: str, rom: Path, emulator: str) -> str:
     )
 
 
+STEAM_OWNED = re.compile(r"(?i)[\\/]steamapps[\\/]common[\\/]")
+
+
+def emulator_warning(emulator: str) -> str:
+    """Flag the case where the emulator is itself a Steam game.
+
+    Steam treats a shortcut pointing into its own steamapps folder as the
+    game it already owns: it hands the launch back to that app, which
+    starts without the arguments, so the ROM is ignored and the emulator
+    opens to its own menu. A copy installed outside Steam does not have
+    this problem.
+    """
+    if emulator and STEAM_OWNED.search(emulator):
+        name = Path(emulator).stem
+        return (
+            f"{name} is installed through Steam. Shortcuts pointing at it are "
+            "handed back to Steam, which starts it without the ROM argument, "
+            "so games open to the emulator menu instead. Install a standalone "
+            "copy outside the Steam folder and point this parser at that."
+        )
+    return ""
+
+
 def run_parser(parser: dict, notes: list[str]) -> list[dict]:
     """Find every ROM this parser covers and build one entry per game."""
     rom_dir = Path(str(parser.get("rom_dir", "")).strip()).expanduser()
@@ -145,6 +168,9 @@ def run_parser(parser: dict, notes: list[str]) -> list[dict]:
     system = str(parser.get("name", "")).strip()
     tags = list(parser.get("tags") or ([system] if system else []))
     emulator = str(parser.get("emulator", "")).strip()
+    warning = emulator_warning(emulator)
+    if warning:
+        notes.append(f"{parser.get('name', 'ROM system')}: {warning}")
     template = str(parser.get("args") or '"{rom}"')
 
     # Multi-disc sets collapse to a single shelf entry. An .m3u playlist

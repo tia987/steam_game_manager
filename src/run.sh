@@ -7,7 +7,7 @@ cd "${0%/*}" 2>/dev/null || cd "$(dirname "$0")" || exit 1
 for candidate in python3 python; do
     if command -v "$candidate" >/dev/null 2>&1 &&
        "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)' 2>/dev/null; then
-        PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$PWD/src" exec "$candidate" -m nsgm "$@"
+        exec "$candidate" -m nsgm "$@"
     fi
 done
 

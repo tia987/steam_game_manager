@@ -1731,9 +1731,11 @@ function renderResolved() {
     });
     box.append(wrap);
   };
+  // Directly under the header, not after the list. A page with thousands
+  // of magnets put these controls an unreasonable scroll away.
+  if (data.method === "page") box.append(shortfall);
   group("Runs on this computer", runs);
   group(runs.length ? "Other builds" : "Found on the page", rest);
-  if (data.method === "page") box.append(shortfall);
   host.append(box);
   host.append(buildDiagnostics(data));
 }
@@ -2196,7 +2198,22 @@ function switchTab(tab) {
   updateDock();
 }
 
-boot().then(wire).catch((error) => {
+async function restoreSession() {
+  try {
+    const data = await api("/api/games", {});
+    if (!(data.games || []).length) return;
+    S.games = data.games;
+    S.matches = data.matches || {};
+    S.selected = new Set(S.games.map((g) => g.uid));
+    renderWall();
+    const covered = Object.values(S.matches).filter((m) => m && m.thumb).length;
+    toast(`Restored ${S.games.length} games${covered ? ` and ${covered} covers` : ""}`);
+  } catch (error) {
+    // Nothing saved yet is the normal case, not a problem worth reporting.
+  }
+}
+
+boot().then(wire).then(restoreSession).catch((error) => {
   document.body.innerHTML =
     `<p style="padding:40px;font-family:system-ui">Could not start: ${escapeHtml(error.message)}</p>`;
 });

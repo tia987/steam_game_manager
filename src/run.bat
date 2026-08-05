@@ -66,7 +66,7 @@ if not exist "%RUNTIME%\python.exe" goto :dlfail
 
 REM The embeddable build fixes its own import path in a ._pth file, so the
 REM app folder has to be added or "import nsgm" will not resolve.
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -Path '%RUNTIME%\python*._pth' | ForEach-Object { if (-not (Select-String -Path $_.FullName -SimpleMatch '..\src' -Quiet)) { Add-Content -Path $_.FullName -Value '..\src' } }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -Path '%RUNTIME%\python*._pth' | ForEach-Object { if (-not (Select-String -Path $_.FullName -SimpleMatch '..' -Quiet)) { Add-Content -Path $_.FullName -Value '..' } }"
 
 set "PYEXE=%RUNTIME%\python.exe"
 echo   Ready.
@@ -74,7 +74,6 @@ echo.
 
 REM --- run ---------------------------------------------------------------
 :run
-set "PYTHONPATH=%~dp0src;%PYTHONPATH%"
 "%PYEXE%" %PYARGS% -m nsgm %*
 if !errorlevel! neq 0 goto :runfail
 goto :eof
@@ -96,7 +95,7 @@ echo.
 echo   You can do the same thing by hand:
 echo     1. Download %URL%
 echo     2. Extract it into a folder called "runtime" next to this file
-echo     3. Open runtime\python312._pth in Notepad and add a line: ..\src
+echo     3. Open runtime\python312._pth in Notepad and add a line: ..
 echo     4. Run this file again
 echo.
 pause

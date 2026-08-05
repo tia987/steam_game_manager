@@ -48,8 +48,6 @@ jobs:
 
       - name: Check it imports and starts
         shell: bash
-        env:
-          PYTHONPATH: src
         run: |
           python -c "import nsgm, nsgm.server, nsgm.resolve, nsgm.steam; print('imports fine')"
           python -c "

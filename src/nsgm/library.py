@@ -45,6 +45,7 @@ DEFAULT_SETTINGS: dict = {
     "add_tag": True,
     "feeds": [dict(f) for f in DEFAULT_FEEDS],
     "watched": [],   # pages watched for new downloads
+    "hide_steam_games": True,
     "github_token": "",
 }
 
@@ -74,6 +75,45 @@ def save_settings(settings: dict) -> None:
 # --------------------------------------------------------------------------
 # record of shortcuts this tool created
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# the last scan, kept so a reload does not undo the work
+# --------------------------------------------------------------------------
+
+def session_path() -> Path:
+    return config_dir() / "session.json"
+
+
+def save_session(games: list, matches: dict) -> None:
+    """Remember what was found and which covers were matched.
+
+    Both cost real time - a scan walks the disk, matching asks
+    SteamGridDB once per game - so losing them to a page refresh was
+    paying that price twice for nothing.
+    """
+    try:
+        payload = {"saved": time.time(), "games": games[:3000], "matches": matches}
+        tmp = session_path().with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload), "utf-8")
+        tmp.replace(session_path())
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def load_session() -> dict:
+    path = session_path()
+    if not path.exists():
+        return {"games": [], "matches": {}}
+    try:
+        data = json.loads(path.read_text("utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"games": [], "matches": {}}
+    return {
+        "games": data.get("games") or [],
+        "matches": data.get("matches") or {},
+        "saved": data.get("saved", 0),
+    }
+
 
 def manifest_path(id3: str) -> Path:
     return config_dir() / f"managed-{id3}.json"
@@ -120,6 +160,24 @@ def collect_games(settings: dict) -> tuple[list[dict], list[str]]:
                 games.extend(run_parser(parser, notes))
             except Exception as exc:
                 notes.append(f"{parser.get('name', 'Parser')}: {exc}")
+
+    # Games Steam already has need no adding. Offering them back is noise
+    # at best, and a second shortcut to something already in the library
+    # at worst.
+    owned: dict = {}
+    if settings.get("hide_steam_games", True):
+        root = steam.find_steam_root()
+        if root:
+            try:
+                owned = steam.installed_apps(root)
+            except OSError:
+                owned = {}
+    if owned:
+        before = len(games)
+        games = [g for g in games if g.get("title", "").strip().lower() not in owned]
+        skipped = before - len(games)
+        if skipped:
+            notes.append(f"Skipped {skipped} titles Steam already has installed.")
 
     # Same title from two sources is common (a game in both GOG and a folder
     # scan). Keep the first, which follows source order, and drop the rest.

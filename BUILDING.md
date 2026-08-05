@@ -52,22 +52,30 @@ in the file is what lets it create the release.
 
 ## Layout
 
-The package lives in `src/nsgm/`, which keeps the importable code apart
-from the build and packaging files around it. Six things point at that
-location and have to agree, so if you move it again, these are what to
-change:
+`nsgm/` at the root is the package, and its name is the import name:
+`import nsgm` works because the folder is called `nsgm`. That folder
+cannot be flattened away — losing it would rename the package after
+whatever directory replaced it.
+
+A `src/nsgm/` arrangement is also common and equally correct; it keeps
+the importable code apart from the packaging files. Either works. What
+does not work is putting the modules directly in a `src/` folder, since
+the package would then be called `src` and would collide with every other
+project that did the same on install.
+
+If you do move it, these are the files that have to agree:
 
 | File | What it points at |
 | --- | --- |
-| `pyproject.toml` | `package-dir = { "" = "src" }` |
+| `pyproject.toml` | `packages`, and `package-dir` if the code is nested |
 | `nsgm.spec` | `pathex` and the `datas` source path |
-| `run.sh`, `run.bat` | `PYTHONPATH` so a source run can import it |
+| `run.sh`, `run.bat` | whether `PYTHONPATH` needs setting to import it |
 | `run.bat` | the portable runtime's `._pth` line |
-| `.github/workflows/build.yml` | `PYTHONPATH` for the pre-build checks |
+| `.github/workflows/build.yml` | the pre-build import check |
 
-The interface files under `src/nsgm/web/` are read at runtime and must be
+The interface files under `nsgm/web/` are read at runtime and must be
 committed. Inside a built binary they land at `nsgm/web`, which is where
-the server looks, so the runtime lookup does not change with the layout.
+the server looks, so that lookup does not change with the layout.
 
 ## What to put in the repository
 

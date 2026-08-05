@@ -185,6 +185,8 @@ class SteamUser:
     name: str
     userdata: Path
     most_recent: bool = False
+    known: bool = False        # Steam has signed in as this account
+    has_data: bool = False     # the folder holds real configuration
 
     @property
     def id64(self) -> int:
@@ -212,6 +214,51 @@ class SteamUser:
         }
 
 
+def library_folders(steam_root: Path) -> list[Path]:
+    """Every disk Steam keeps games on, not just the one it is installed to."""
+    found = [steam_root / "steamapps"]
+    manifest = steam_root / "steamapps" / "libraryfolders.vdf"
+    if manifest.exists():
+        try:
+            parsed = vdf.text_loads(manifest.read_text("utf-8", "replace"))
+            entries = parsed.get("libraryfolders") or parsed.get("LibraryFolders") or {}
+            for key, value in entries.items():
+                path = value.get("path") if isinstance(value, dict) else value
+                if isinstance(path, str) and path.strip():
+                    candidate = Path(path) / "steamapps"
+                    if candidate.is_dir() and candidate not in found:
+                        found.append(candidate)
+        except (OSError, ValueError):
+            pass
+    return [f for f in found if f.is_dir()]
+
+
+def installed_apps(steam_root: Path) -> dict[str, str]:
+    """Games Steam already has, by title.
+
+    Read from the appmanifest files Steam writes for each installed game.
+    Without this, a scan of installed programs offers back the Steam
+    library itself, which is the one thing that does not need adding.
+    """
+    apps: dict[str, str] = {}
+    for folder in library_folders(steam_root):
+        try:
+            manifests = list(folder.glob("appmanifest_*.acf"))
+        except OSError:
+            continue
+        for manifest in manifests:
+            try:
+                parsed = vdf.text_loads(manifest.read_text("utf-8", "replace"))
+            except (OSError, ValueError):
+                continue
+            state = parsed.get("AppState") or {}
+            name = str(state.get("name", "")).strip()
+            app_id = str(state.get("appid", "")).strip()
+            if name:
+                apps[name.lower()] = app_id
+    return apps
+
+
 def list_users(steam_root: Path) -> list[SteamUser]:
     """Every account with a local userdata folder, most recent first."""
     names: dict[str, tuple[str, bool]] = {}
@@ -234,10 +281,20 @@ def list_users(steam_root: Path) -> list[SteamUser]:
         for entry in sorted(userdata.iterdir()):
             if not entry.is_dir() or not entry.name.isdigit() or entry.name == "0":
                 continue
-            label, recent = names.get(entry.name, (f"Account {entry.name}", False))
-            users.append(SteamUser(entry.name, label, entry, recent))
+            known = entry.name in names
+            # An account Steam has never signed in as still leaves a folder
+            # behind. Naming it "Account 1719572816" made a leftover look
+            # like a real choice, and it sorted ahead of the actual one.
+            label, recent = names.get(entry.name, (f"Unused account {entry.name}", False))
+            user = SteamUser(entry.name, label, entry, recent)
+            user.known = known
+            user.has_data = (entry / "config" / "localconfig.vdf").exists() or \
+                            (entry / "config" / "shortcuts.vdf").exists()
+            users.append(user)
 
-    users.sort(key=lambda u: (not u.most_recent, u.name.lower()))
+    # Most recently signed in first, then accounts Steam actually knows,
+    # then ones with any local data, then by name.
+    users.sort(key=lambda u: (not u.most_recent, not u.known, not u.has_data, u.name.lower()))
     return users
 
 

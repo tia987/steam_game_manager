@@ -138,6 +138,8 @@ def scan_job(job: library.Job, settings: dict) -> None:
         game["short_id"] = library.preview_short_id(game, prefer_direct)
     STATE["games"] = games
     STATE["notes"] = notes
+    STATE["matches"] = {}
+    library.save_session(games, {})
     job.total = job.done = len(games)
     job.result = {"count": len(games), "notes": notes}
     job.message = f"{len(games)} games found"
@@ -177,6 +179,8 @@ def match_job(job: library.Job, games: list[dict], settings: dict) -> None:
             job.log.append(str(exc))
             break
 
+    STATE["matches"] = {**(STATE.get("matches") or {}), **matches}
+    library.save_session(STATE.get("games") or [], STATE["matches"])
     job.result = {"matches": matches}
     job.message = f"{sum(1 for m in matches.values() if m.get('sgdb_id'))} of {len(games)} matched"
 
@@ -518,7 +522,17 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, {"job": job.id})
 
             if path == "/api/games":
-                return json_response(self, {"games": STATE["games"], "notes": STATE["notes"]})
+                # A page reload should not throw away a scan and a round of
+                # cover matching; both are restored from the last session.
+                if not STATE.get("games"):
+                    saved = library.load_session()
+                    STATE["games"] = saved["games"]
+                    STATE["matches"] = saved["matches"]
+                return json_response(self, {
+                    "games": STATE["games"],
+                    "notes": STATE["notes"],
+                    "matches": STATE.get("matches") or {},
+                })
 
             if path == "/api/match":
                 settings = library.load_settings()

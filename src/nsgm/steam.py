@@ -292,9 +292,16 @@ def list_users(steam_root: Path) -> list[SteamUser]:
                             (entry / "config" / "shortcuts.vdf").exists()
             users.append(user)
 
-    # Most recently signed in first, then accounts Steam actually knows,
-    # then ones with any local data, then by name.
-    users.sort(key=lambda u: (not u.most_recent, not u.known, not u.has_data, u.name.lower()))
+    # Folders for accounts Steam has never signed in as are leftovers, and
+    # offering them as a choice invites picking the wrong one. They are
+    # dropped unless there is nothing else, in which case something has to
+    # be offered.
+    known_users = [u for u in users if u.known]
+    if known_users:
+        users = known_users
+
+    # Most recently signed in first, then accounts with any local data.
+    users.sort(key=lambda u: (not u.most_recent, not u.has_data, u.name.lower()))
     return users
 
 

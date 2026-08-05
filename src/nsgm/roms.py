@@ -135,6 +135,41 @@ def emulator_warning(emulator: str) -> str:
     return ""
 
 
+CORE_ARG = re.compile(r'(?i)-L\s+"([^"]+)"|-L\s+(\S+)')
+
+
+def core_warning(args: str) -> str:
+    """Check that a RetroArch core named in the arguments actually exists.
+
+    RetroArch installed through Steam ships with no cores at all: each one
+    is a separate download from within RetroArch itself. Pointing at a core
+    that was never installed makes the game appear to start and stop
+    immediately, with nothing said about why.
+    """
+    match = CORE_ARG.search(args or "")
+    if not match:
+        return ""
+    core = (match.group(1) or match.group(2) or "").strip()
+    if not core or "{" in core:
+        return ""
+    # pathlib judges "absolute" by the host's rules, so a Windows path
+    # inspected anywhere else reads as relative and the check quietly
+    # skips. Decide from the text instead.
+    windows_absolute = bool(re.match(r"^[A-Za-z]:[\\/]", core))
+    if not (windows_absolute or core.startswith(("/", "\\\\"))):
+        return ""
+    path = Path(core)
+    if path.exists():
+        return ""
+    name = core.replace("\\", "/").rsplit("/", 1)[-1]
+    folder = core.replace("\\", "/").rsplit("/", 1)[0]
+    return (
+        f"the core {name} is not in {folder}. RetroArch ships with no cores "
+        "at all; open it and use Load Core, then Download a Core, to fetch "
+        "this one. Until then games appear to launch and stop at once."
+    )
+
+
 def run_parser(parser: dict, notes: list[str]) -> list[dict]:
     """Find every ROM this parser covers and build one entry per game."""
     rom_dir = Path(str(parser.get("rom_dir", "")).strip()).expanduser()
@@ -171,6 +206,10 @@ def run_parser(parser: dict, notes: list[str]) -> list[dict]:
     warning = emulator_warning(emulator)
     if warning:
         notes.append(f"{parser.get('name', 'ROM system')}: {warning}")
+
+    core_problem = core_warning(template)
+    if core_problem:
+        notes.append(f"{parser.get('name', 'ROM system')}: {core_problem}")
     template = str(parser.get("args") or '"{rom}"')
 
     # Multi-disc sets collapse to a single shelf entry. An .m3u playlist

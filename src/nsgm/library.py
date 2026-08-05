@@ -172,12 +172,46 @@ def collect_games(settings: dict) -> tuple[list[dict], list[str]]:
                 owned = steam.installed_apps(root)
             except OSError:
                 owned = {}
-    if owned:
+    # Shortcuts already in Steam count too, however they got there. Only
+    # games this tool added were being recognised, so anything added by
+    # hand kept reappearing as though it still needed importing.
+    existing_titles: set = set()
+    existing_exes: set = set()
+    if settings.get("hide_steam_games", True):
+        root = steam.find_steam_root()
+        if root:
+            try:
+                for user in steam.list_users(root):
+                    for entry in steam.read_shortcuts(user):
+                        name = str(entry.get("AppName", "")).strip().lower()
+                        if name:
+                            existing_titles.add(name)
+                        exe = str(entry.get("Exe", "")).strip().strip('"').lower()
+                        if exe:
+                            existing_exes.add(exe)
+            except (OSError, ValueError):
+                pass
+
+    if owned or existing_titles or existing_exes:
         before = len(games)
-        games = [g for g in games if g.get("title", "").strip().lower() not in owned]
+        kept = []
+        for game in games:
+            title = game.get("title", "").strip().lower()
+            exe = str(game.get("exe", "")).strip().strip('"').lower()
+            if title and title in owned:
+                continue
+            if title and title in existing_titles:
+                continue
+            if exe and exe in existing_exes:
+                continue
+            kept.append(game)
+        games = kept
         skipped = before - len(games)
         if skipped:
-            notes.append(f"Skipped {skipped} titles Steam already has installed.")
+            notes.append(
+                f"Skipped {skipped} titles Steam already has, "
+                "whether installed or added as a shortcut."
+            )
 
     # Same title from two sources is common (a game in both GOG and a folder
     # scan). Keep the first, which follows source order, and drop the rest.

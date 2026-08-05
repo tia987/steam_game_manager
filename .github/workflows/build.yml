@@ -1,8 +1,7 @@
 # Builds a standalone executable for each platform.
 #
-# This is also the answer to "how do I make a Windows .exe" without owning a
-# Windows machine: GitHub runs one for you. Push a tag like v1.0.1 and the
-# finished binaries are attached to a release automatically.
+# Push a tag like v1.0.2 and the finished binaries are attached to a release
+# automatically. A push to main just builds and keeps them as artifacts.
 name: Build
 
 on:
@@ -26,15 +25,15 @@ jobs:
           - os: windows-latest
             label: Windows
             artifact: nonsteam-game-manager-windows
-            binary: dist/nonsteam-game-manager.exe
+            binary: nonsteam-game-manager.exe
           - os: ubuntu-latest
             label: Linux
             artifact: nonsteam-game-manager-linux
-            binary: dist/nonsteam-game-manager
+            binary: nonsteam-game-manager
           - os: macos-latest
             label: macOS
             artifact: nonsteam-game-manager-macos
-            binary: dist/nonsteam-game-manager
+            binary: nonsteam-game-manager
 
     steps:
       - uses: actions/checkout@v4
@@ -43,11 +42,49 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Rather than assume where the project sits, find it. The package has
+      # lived at the root and inside src/ at different times, and a workflow
+      # that hard-codes one of those breaks silently when the other is used.
+      - name: Locate the project
+        id: locate
+        shell: bash
+        run: |
+          echo "::group::Repository contents"
+          find . -maxdepth 3 -not -path "./.git/*" -not -path "./.git" | sort
+          echo "::endgroup::"
+
+          spec=$(find . -name "nsgm.spec" -not -path "./.git/*" | head -1)
+          pkg=$(find . -name "__main__.py" -path "*/nsgm/*" -not -path "./.git/*" | head -1)
+
+          if [ -z "$pkg" ]; then
+            echo "::error::No nsgm package found. The nsgm/ folder with the .py files is missing from this repository."
+            exit 1
+          fi
+          root=$(dirname "$(dirname "$pkg")")
+          echo "Package found at: $(dirname "$pkg")"
+          echo "Working from:     $root"
+
+          if [ -z "$spec" ]; then
+            echo "::error::nsgm.spec is missing. It must sit next to the nsgm/ folder, in $root"
+            exit 1
+          fi
+          specdir=$(dirname "$spec")
+          if [ "$specdir" != "$root" ]; then
+            echo "::error::nsgm.spec is in $specdir but the package is in $root. They must be in the same folder."
+            exit 1
+          fi
+          if [ ! -d "$root/nsgm/web" ]; then
+            echo "::error::$root/nsgm/web is missing. The interface files are required and must be committed."
+            exit 1
+          fi
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+
       - name: Install the build tool
         run: python -m pip install --upgrade pip pyinstaller
 
       - name: Check it imports and starts
         shell: bash
+        working-directory: ${{ steps.locate.outputs.root }}
         run: |
           python -c "import nsgm, nsgm.server, nsgm.resolve, nsgm.steam; print('imports fine')"
           python -c "
@@ -60,17 +97,21 @@ jobs:
           "
 
       - name: Build
+        working-directory: ${{ steps.locate.outputs.root }}
         run: pyinstaller nsgm.spec --clean --noconfirm
 
       - name: Check the binary runs
         shell: bash
+        working-directory: ${{ steps.locate.outputs.root }}
         run: |
-          "${{ matrix.binary }}" --version
+          "dist/${{ matrix.binary }}" --version
 
+      # Artifact paths are measured from the repository root, not from the
+      # working directory, so the located folder is prefixed here.
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.binary }}
+          path: ${{ steps.locate.outputs.root }}/dist/${{ matrix.binary }}
           if-no-files-found: error
 
   release:

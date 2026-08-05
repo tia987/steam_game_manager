@@ -81,6 +81,46 @@ The interface files under `src/nsgm/web/` are read at runtime and must be
 committed. Inside a built binary they land at `nsgm/web`, which is where
 the server looks, so that lookup does not change with the layout.
 
+## The Windows installer
+
+`installer.iss` is an Inno Setup script. The workflow builds it on the
+Windows runner and attaches `nonsteam-game-manager-setup.exe` to releases
+alongside the bare binaries.
+
+It installs **per user**, so there is no administrator prompt and no UAC
+dialog. That puts it under the user's own folders and gives it a normal
+Add/Remove Programs entry, a Start Menu shortcut and an optional desktop
+one. The bare `.exe` is still published for anyone who would rather not
+install anything.
+
+## The app window
+
+The interface is a local web page, which is what makes it behave the same
+everywhere. A release build shows it in a window of its own rather than a
+browser tab, using the webview already in the operating system — WebView2
+on Windows, WebKit elsewhere — so no browser engine is shipped.
+
+That is optional at runtime. Running from source without `pywebview`
+installed opens your browser instead, exactly as before, and `--browser`
+forces that on any build. There is no console window in a release build:
+the app has a window, and a terminal behind it was the main thing that
+made this look unfinished.
+
+## Updates
+
+`nsgm/updater.py` asks the GitHub releases API what the newest tag is and
+compares it with the running version. If it is newer, a badge appears in
+the header linking to the download — the installer on Windows, the bare
+binary elsewhere.
+
+It deliberately does not replace itself. A running program cannot
+overwrite its own file on Windows, and the usual workaround (a helper
+that waits for the process to exit, swaps the file, restarts it) fails
+worst in exactly the situations where failure matters. The installer
+already does this correctly and keeps the uninstall entry honest.
+
+Point it at a different repository by setting `update_repo` in settings.
+
 ## What to put in the repository
 
 Everything here except `dist/`, `build/` and `runtime/`, which

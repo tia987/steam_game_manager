@@ -2213,7 +2213,26 @@ async function restoreSession() {
   }
 }
 
-boot().then(wire).then(restoreSession).catch((error) => {
+async function checkForUpdate() {
+  try {
+    const info = await api("/api/update");
+    if (!info.available) return;
+    const badge = $("updateBadge");
+    badge.hidden = false;
+    badge.textContent = `Update to ${info.version}`;
+    badge.title = info.note || `You have ${info.current}. Released ${info.published}.`;
+    badge.addEventListener("click", () => {
+      // The installer replaces the app properly. A running program cannot
+      // overwrite its own file, and a half-done self-update is worse than
+      // none, so this opens the download as a deliberate act.
+      window.open(info.download || info.page, "_blank", "noopener");
+    });
+  } catch (error) {
+    // A failed update check is never worth interrupting anyone over.
+  }
+}
+
+boot().then(wire).then(restoreSession).then(checkForUpdate).catch((error) => {
   document.body.innerHTML =
     `<p style="padding:40px;font-family:system-ui">Could not start: ${escapeHtml(error.message)}</p>`;
 });

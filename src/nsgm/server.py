@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import catalog, download, feeds, library, pipeline, resolve, roms, scanners, sgdb, steam, uninstall
+from . import catalog, download, feeds, library, pipeline, resolve, roms, scanners, sgdb, steam, uninstall, updater
 
 def _web_dir() -> Path:
     """Where index.html lives, running from source or from a built binary.
@@ -500,6 +500,14 @@ class Handler(BaseHTTPRequestHandler):
                 "programs": uninstall.list_programs(),
                 "supported": uninstall.IS_WINDOWS,
             })
+
+        if path == "/api/update":
+            from . import __version__
+            settings = library.load_settings()
+            return json_response(
+                self,
+                updater.check(__version__, settings.get("update_repo") or updater.REPO),
+            )
 
         if path == "/api/presets":
             return json_response(self, {"presets": roms.PRESETS})

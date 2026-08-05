@@ -2108,6 +2108,18 @@ function wire() {
   $("account").addEventListener("change", () => { if (S.tab === "managed") loadManaged(); });
 
   $("openSettings").addEventListener("click", () => $("settingsDialog").showModal());
+  // Only useful in a browser tab: a window has its own close button, and
+  // closing that already ends the process.
+  if (!S.boot.windowed) {
+    $("quitApp").hidden = false;
+    $("quitApp").addEventListener("click", async () => {
+      if (!confirm("Close the app? Anything still downloading will stop.")) return;
+      try { await api("/api/quit", {}); } catch (error) { /* it is going away */ }
+      document.body.innerHTML =
+        '<p style="padding:40px;font-family:system-ui;color:#948aa8">' +
+        'Closed. You can shut this tab.</p>';
+    });
+  }
   $("saveSettings").addEventListener("click", async () => {
     await saveSettings({
       api_key: $("apiKey").value.trim(),

@@ -519,6 +519,15 @@ class Handler(BaseHTTPRequestHandler):
         payload = self.read_json()
 
         try:
+            if path == "/api/quit":
+                # Browser mode has no window to close, so there has to be a
+                # way out that is not Task Manager.
+                def stop() -> None:
+                    time.sleep(0.4)
+                    os._exit(0)
+                threading.Thread(target=stop, daemon=True).start()
+                return json_response(self, {"stopping": True})
+
             if path == "/api/settings":
                 library.save_settings(payload.get("settings") or {})
                 return json_response(self, {"settings": library.load_settings()})
@@ -917,6 +926,7 @@ class Handler(BaseHTTPRequestHandler):
             "platform": platform.system(),
             "art_kinds": sgdb.ART_ORDER,
             "config_dir": str(library.config_dir()),
+            "windowed": bool(STATE.get("windowed")),
         }
 
 

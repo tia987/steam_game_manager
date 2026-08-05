@@ -9,6 +9,12 @@
 #ifndef AppVersion
   #define AppVersion "1.0.0"
 #endif
+; Where PyInstaller left the binary, relative to this file. The project
+; lives in src/, so its dist folder does too - pointing at "dist" from the
+; repository root found nothing and the installer step failed.
+#ifndef DistDir
+  #define DistDir "src\dist"
+#endif
 
 [Setup]
 AppId={{8E2A5F31-4C7D-4B29-9E13-3A7C4D5E6F70}
@@ -36,7 +42,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
 
 [Files]
-Source: "dist\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#DistDir}\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion isreadme
 
 [Icons]

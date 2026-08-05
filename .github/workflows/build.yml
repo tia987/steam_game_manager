@@ -79,8 +79,17 @@ jobs:
           fi
           echo "root=$root" >> "$GITHUB_OUTPUT"
 
-      - name: Install the build tool
-        run: python -m pip install --upgrade pip pyinstaller
+      - name: Install the build tools
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip pyinstaller
+          # Gives the app its own window instead of a browser tab. Optional
+          # at runtime, so a platform where it will not install is not fatal.
+          if python -m pip install pywebview; then
+            python -c "import webview; print('pywebview OK')"
+          else
+            echo "::warning::pywebview did not install; this build opens a browser instead of a window"
+          fi
 
       - name: Check it imports and starts
         shell: bash
@@ -108,10 +117,59 @@ jobs:
 
       # Artifact paths are measured from the repository root, not from the
       # working directory, so the located folder is prefixed here.
+      # A real installer: Start Menu entry, an uninstall entry, and a fixed
+      # place on disk. Per-user, so it never asks for administrator rights.
+      - name: Build the Windows installer
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          choco install innosetup --no-progress -y
+          cp README.md "${{ steps.locate.outputs.root }}/README.md" 2>/dev/null || true
+          version="${GITHUB_REF_NAME#v}"
+          [ "$version" = "$GITHUB_REF_NAME" ] && version="1.0.0"
+          dist_win=$(echo "${{ steps.locate.outputs.root }}/dist" | sed 's|^\./||; s|/|\\|g')
+          echo "binary is in: $dist_win"
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
+            "/DAppVersion=$version" \
+            "/O${{ steps.locate.outputs.root }}/dist" \
+            "/DDistDir=$dist_win" \
+            installer.iss
+          ls -la "${{ steps.locate.outputs.root }}/dist"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: ${{ steps.locate.outputs.root }}/dist/${{ matrix.binary }}
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'windows-latest'
+        with:
+          name: nonsteam-game-manager-installer
+          path: ${{ steps.locate.outputs.root }}/dist/nonsteam-game-manager-setup.exe
+          if-no-files-found: error
+
+      # macOS refuses to treat a bare Unix executable as an application:
+      # double clicking one opens it in TextEdit. A .app bundle inside a
+      # .dmg is what people expect to drag into Applications.
+      - name: Package the macOS app
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        working-directory: ${{ steps.locate.outputs.root }}
+        run: |
+          ls -la dist
+          test -d "dist/Non-Steam Game Manager.app" || {
+            echo "::error::PyInstaller produced no .app bundle"; exit 1; }
+          hdiutil create -volname "Non-Steam Game Manager" \
+            -srcfolder "dist/Non-Steam Game Manager.app" \
+            -ov -format UDZO "dist/nonsteam-game-manager-macos.dmg"
+          ls -la dist/*.dmg
+
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'macos-latest'
+        with:
+          name: nonsteam-game-manager-macos-dmg
+          path: ${{ steps.locate.outputs.root }}/dist/nonsteam-game-manager-macos.dmg
           if-no-files-found: error
 
   release:
@@ -129,10 +187,14 @@ jobs:
           mkdir -p release
           cp artifacts/nonsteam-game-manager-windows/nonsteam-game-manager.exe \
              release/nonsteam-game-manager-windows.exe
+          cp artifacts/nonsteam-game-manager-installer/nonsteam-game-manager-setup.exe \
+             release/nonsteam-game-manager-setup.exe
           cp artifacts/nonsteam-game-manager-linux/nonsteam-game-manager \
              release/nonsteam-game-manager-linux
           cp artifacts/nonsteam-game-manager-macos/nonsteam-game-manager \
              release/nonsteam-game-manager-macos
+          cp artifacts/nonsteam-game-manager-macos-dmg/nonsteam-game-manager-macos.dmg \
+             release/nonsteam-game-manager-macos.dmg
           cd release && sha256sum * > checksums.txt && cat checksums.txt
 
       - uses: softprops/action-gh-release@v2

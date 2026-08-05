@@ -13,6 +13,7 @@ old behaviour and always works.
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import webbrowser
@@ -27,6 +28,16 @@ def available() -> bool:
     except Exception:
         return False
     return True
+
+
+def _hard_exit(code: int = 0) -> None:
+    """Leave immediately, without waiting for anything still running."""
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(code)
 
 
 def _open_browser(url: str) -> None:
@@ -58,6 +69,11 @@ def run(url: str, serve, prefer_window: bool = True) -> None:
             confirm_close=False,
         )
         webview.start()
+        # Closing the window ends the program. The server runs on a daemon
+        # thread, but a background job mid-flight can keep the process alive
+        # and holding the port, which looked like the app had not quit and
+        # left Task Manager as the only way out.
+        _hard_exit()
     except Exception as exc:
         # A missing WebView2 runtime, no display, a locked-down desktop:
         # whatever the reason, falling back beats refusing to start.

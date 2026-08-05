@@ -2,6 +2,7 @@
 #   pyinstaller nsgm.spec
 # Paths are relative to this file, which sits beside the nsgm package.
 import importlib.util
+import sys
 
 block_cipher = None
 
@@ -69,3 +70,21 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
+
+# macOS will not treat a bare Unix executable as an application: double
+# clicking one opens it in TextEdit. It needs a .app bundle, which is a
+# folder with a particular shape, and that is what this produces.
+if sys.platform == "darwin":
+    app = BUNDLE(
+        exe,
+        name="Non-Steam Game Manager.app",
+        icon=None,
+        bundle_identifier="com.tia987.nonsteamgamemanager",
+        info_plist={
+            "NSHighResolutionCapable": True,
+            "LSApplicationCategoryType": "public.app-category.utilities",
+            "CFBundleShortVersionString": "1.0.0",
+            # It has a window, so it belongs in the Dock like anything else.
+            "LSUIElement": False,
+        },
+    )

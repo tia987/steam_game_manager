@@ -51,6 +51,7 @@ def main() -> int:
     want_window = not args.browser and desktop.available()
     if want_window:
         print(f"  Opening a window at {url}\n")
+        server.STATE["windowed"] = True
         desktop.run(url, lambda: server.serve(port, open_browser=False), True)
     else:
         server.serve(port, open_browser=True)

@@ -119,22 +119,37 @@ jobs:
       # working directory, so the located folder is prefixed here.
       # A real installer: Start Menu entry, an uninstall entry, and a fixed
       # place on disk. Per-user, so it never asks for administrator rights.
+      # Built in PowerShell, not bash. Git Bash on Windows rewrites any
+      # argument beginning with "/" into a Windows path, so ISCC's own
+      # switches (/DAppVersion=..., /O...) arrived as file names and it
+      # refused with "You may not specify more than one script filename".
       - name: Build the Windows installer
         if: matrix.os == 'windows-latest'
-        shell: bash
+        shell: pwsh
         run: |
-          choco install innosetup --no-progress -y
-          cp README.md "${{ steps.locate.outputs.root }}/README.md" 2>/dev/null || true
-          version="${GITHUB_REF_NAME#v}"
-          [ "$version" = "$GITHUB_REF_NAME" ] && version="1.0.0"
-          dist_win=$(echo "${{ steps.locate.outputs.root }}/dist" | sed 's|^\./||; s|/|\\|g')
-          echo "binary is in: $dist_win"
-          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
-            "/DAppVersion=$version" \
-            "/O${{ steps.locate.outputs.root }}/dist" \
-            "/DDistDir=$dist_win" \
-            installer.iss
-          ls -la "${{ steps.locate.outputs.root }}/dist"
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+          }
+          if (-not (Test-Path $iscc)) {
+            Write-Error "Inno Setup is not at $iscc"; exit 1
+          }
+
+          $root = "${{ steps.locate.outputs.root }}" -replace '^\./', ''
+          if ([string]::IsNullOrWhiteSpace($root) -or $root -eq '.') { $dist = 'dist' }
+          else { $dist = "$root\dist" }
+          $dist = $dist -replace '/', '\'
+
+          $ref = $env:GITHUB_REF_NAME
+          if ($ref -match '^v(\d+(\.\d+)*)') { $version = $Matches[1] } else { $version = '1.0.0' }
+
+          Write-Host "binary folder: $dist"
+          Write-Host "version:       $version"
+          Get-ChildItem $dist
+
+          & $iscc "/DAppVersion=$version" "/DDistDir=$dist" "/O$dist" "installer.iss"
+          if ($LASTEXITCODE -ne 0) { Write-Error "Inno Setup failed"; exit $LASTEXITCODE }
+          Get-ChildItem $dist -Filter *.exe
 
       - uses: actions/upload-artifact@v4
         with:

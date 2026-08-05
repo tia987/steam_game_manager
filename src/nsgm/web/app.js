@@ -2233,11 +2233,35 @@ async function checkForUpdate() {
     badge.hidden = false;
     badge.textContent = `Update to ${info.version}`;
     badge.title = info.note || `You have ${info.current}. Released ${info.published}.`;
-    badge.addEventListener("click", () => {
-      // The installer replaces the app properly. A running program cannot
-      // overwrite its own file, and a half-done self-update is worse than
-      // none, so this opens the download as a deliberate act.
-      window.open(info.download || info.page, "_blank", "noopener");
+    badge.addEventListener("click", async () => {
+      // Where the program can replace its own file, do that. Otherwise
+      // fall back to opening the download, which is all that is possible
+      // when running from source or from a folder we cannot write to.
+      if (!info.can_replace || !info.binary) {
+        // Say why before sending someone off to reinstall by hand, rather
+        // than silently opening a download and leaving them to work it out.
+        const reason = info.why_not ||
+          "no in-place download is published for this system";
+        if (!confirm(`This copy cannot update itself: ${reason}\n\n` +
+                     `Open the download page instead?`)) return;
+        window.open(info.download || info.page, "_blank", "noopener");
+        return;
+      }
+      if (!confirm(`Update to ${info.version}?\n\n` +
+                   `It will be installed now and take effect when you restart.`)) return;
+      badge.disabled = true;
+      try {
+        const { job } = await api("/api/update/apply", { url: info.binary });
+        await runJob(job, `Installing ${info.version}`);
+        badge.textContent = "Restart to finish";
+        badge.disabled = false;
+        badge.title = "The new version is in place and starts with the next launch.";
+        badge.onclick = null;
+      } catch (error) {
+        badge.disabled = false;
+        toast(error.message, "bad");
+        $("jobDialog").close();
+      }
     });
   } catch (error) {
     // A failed update check is never worth interrupting anyone over.

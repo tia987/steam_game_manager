@@ -79,6 +79,30 @@ jobs:
           fi
           echo "root=$root" >> "$GITHUB_OUTPUT"
 
+      # The version is baked into the binary at build time. Without this it
+      # stays at whatever the source says, so every release reported 1.0.0
+      # and told itself an update was available for ever.
+      # The version is baked in at build time. Without this it stays at
+      # whatever the source says, so every release reported 1.0.0 and told
+      # itself an update was available for ever.
+      - name: Stamp the version
+        shell: bash
+        working-directory: ${{ steps.locate.outputs.root }}
+        run: |
+          ref="${GITHUB_REF_NAME}"
+          if [[ "$ref" =~ ^v([0-9]+(\.[0-9]+)*) ]]; then
+            version="${BASH_REMATCH[1]}"
+          else
+            version="0.0.0-dev"
+          fi
+          echo "stamping version $version"
+          # -i.bak keeps this working on both GNU and BSD sed, so the same
+          # line is correct on the Linux, Windows and macOS runners.
+          sed -i.bak -E "s/^__version__ = .*/__version__ = \"$version\"/" nsgm/__init__.py
+          rm -f nsgm/__init__.py.bak
+          grep __version__ nsgm/__init__.py
+          python -c "import nsgm; print('binary will report', nsgm.__version__)"
+
       - name: Install the build tools
         shell: bash
         run: |
@@ -167,6 +191,10 @@ jobs:
       # macOS refuses to treat a bare Unix executable as an application:
       # double clicking one opens it in TextEdit. A .app bundle inside a
       # .dmg is what people expect to drag into Applications.
+      # A .dmg that opens showing the app beside an Applications shortcut,
+      # so the drag is obvious. The decorative background and fixed icon
+      # positions need Finder scripting, which is not reliable on a runner
+      # with no logged-in desktop, so this does the part that matters.
       - name: Package the macOS app
         if: matrix.os == 'macos-latest'
         shell: bash
@@ -175,9 +203,16 @@ jobs:
           ls -la dist
           test -d "dist/Non-Steam Game Manager.app" || {
             echo "::error::PyInstaller produced no .app bundle"; exit 1; }
+
+          rm -rf dmg-staging
+          mkdir dmg-staging
+          cp -R "dist/Non-Steam Game Manager.app" dmg-staging/
+          ln -s /Applications "dmg-staging/Applications"
+
           hdiutil create -volname "Non-Steam Game Manager" \
-            -srcfolder "dist/Non-Steam Game Manager.app" \
+            -srcfolder dmg-staging \
             -ov -format UDZO "dist/nonsteam-game-manager-macos.dmg"
+          hdiutil verify "dist/nonsteam-game-manager-macos.dmg"
           ls -la dist/*.dmg
 
       - uses: actions/upload-artifact@v4

@@ -30,6 +30,14 @@ def main() -> int:
     parser.add_argument("--version", action="version", version=f"nsgm {__version__}")
     args = parser.parse_args()
 
+    # Clear away the copy the last update left behind. It cannot be
+    # deleted while it is the program that is running, so it waits here.
+    try:
+        from . import updater
+        updater.cleanup_previous()
+    except Exception:
+        pass
+
     print(f"\n  Non-Steam Game Manager {__version__}")
     root = steam.find_steam_root()
     if root:

@@ -273,6 +273,21 @@ def deep_resolve_job(job: library.Job, url: str, pages: int, token: str,
     )
 
 
+def update_job(job: library.Job, url: str) -> None:
+    """Swap in the newer program, then ask to be restarted."""
+    job.stage = "downloading"
+    job.total = 100
+
+    def progress(done: int, total: int) -> None:
+        job.done = int(done * 100 / total) if total else 0
+        job.message = f"{done // 1048576} MB of {(total or 0) // 1048576} MB"
+
+    result = updater.apply(url, progress)
+    job.done = job.total
+    job.result = {**result, "version_note": "Restart to finish."}
+    job.message = "Installed. Restart to finish."
+
+
 def index_job(job: library.Job, url: str, pages: int) -> None:
     """Walk a listing of programs and collect every entry it names."""
     job.stage = "crawling"
@@ -519,6 +534,13 @@ class Handler(BaseHTTPRequestHandler):
         payload = self.read_json()
 
         try:
+            if path == "/api/update/apply":
+                url = str(payload.get("url", "")).strip()
+                if not url:
+                    return json_response(self, {"error": "Nothing to install."}, 400)
+                job = library.start_job(update_job, url)
+                return json_response(self, {"job": job.id})
+
             if path == "/api/quit":
                 # Browser mode has no window to close, so there has to be a
                 # way out that is not Task Manager.

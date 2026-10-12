@@ -44,12 +44,16 @@ def _open_browser(url: str) -> None:
     threading.Timer(0.6, lambda: webbrowser.open(url)).start()
 
 
-def run(url: str, serve, prefer_window: bool = True) -> None:
+def run(url: str, serve, prefer_window: bool = True, on_closing=None) -> None:
     """Start the server, then show the interface.
 
     ``serve`` is called on a background thread. The window has to own the
     main thread: every native toolkit insists on it, and starting one
     anywhere else fails in ways that differ per platform.
+
+    ``on_closing`` runs as the window starts to close. It is how held
+    installer windows are let go first: a window's children are destroyed
+    with it, and a running installer must not be.
     """
     if not prefer_window or not available():
         _open_browser(url)
@@ -62,12 +66,22 @@ def run(url: str, serve, prefer_window: bool = True) -> None:
     worker.start()
 
     try:
-        webview.create_window(
+        window = webview.create_window(
             TITLE, url,
             width=1280, height=860,
             min_size=(900, 600),
             confirm_close=False,
         )
+        if on_closing is not None:
+            def closing():
+                try:
+                    on_closing()
+                except Exception:
+                    pass
+            try:
+                window.events.closing += closing
+            except AttributeError:
+                pass                     # an old pywebview without events
         webview.start()
         # Closing the window ends the program. The server runs on a daemon
         # thread, but a background job mid-flight can keep the process alive

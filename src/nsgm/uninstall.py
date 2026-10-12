@@ -20,8 +20,6 @@ import os
 import platform
 import re
 import shutil
-import subprocess
-import time
 from pathlib import Path, PureWindowsPath
 
 IS_WINDOWS = platform.system() == "Windows"
@@ -214,6 +212,8 @@ def list_programs() -> list[dict]:
                 "location": str(values.get("InstallLocation", "")).strip().strip('"'),
                 "uninstall": uninstall,
                 "quiet": quiet,
+                "can_be_quiet": bool(quiet) or bool(uninstall_command(
+                    {"uninstall": uninstall}, silent=True)),
                 "key": key_name,
                 "hive": hive,
                 "subkey": subkey,
@@ -329,41 +329,32 @@ def remove_leftovers(paths: list[str]) -> list[dict]:
 # running the uninstaller
 # --------------------------------------------------------------------------
 
-def run_uninstaller(program: dict, silent: bool = False, timeout: int = 3600) -> dict:
-    """Hand over to the program's own uninstaller and wait for it to finish.
+def uninstall_command(program: dict, silent: bool = False) -> str:
+    """The command line that removes a program, quietly if asked and possible.
 
-    Not silent by default: the installer's own window is where the person
-    answers its questions, which is exactly what they expect to happen.
+    Running it is ``autoinstall.run_uninstaller``'s job, which holds the
+    uninstaller's window inside the app and waits for every process it
+    starts. Not silent by default: the uninstaller's own screens are where
+    its questions get answered.
+
+    Few programs register a quiet command, but the common makers' quiet
+    switches are known, so one is derived where the maker is clear.
     """
-    if not IS_WINDOWS:
-        return {"ok": False, "message": "Uninstalling is only supported on Windows."}
-
-    command = program.get("quiet") if silent and program.get("quiet") else program.get("uninstall")
-    if not command:
-        return {"ok": False, "message": "This program did not register an uninstaller."}
-
-    if silent and not program.get("quiet") and "msiexec" in command.lower():
-        command = re.sub(r"(?i)/[IX]\{", "/X{", command) + " /qn /norestart"
-
-    started = time.time()
-    try:
-        completed = subprocess.run(command, shell=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "message": "The uninstaller is still running; leaving it alone."}
-    except OSError as exc:
-        return {"ok": False, "message": f"Could not start the uninstaller ({exc})."}
-
-    gone = not still_installed(program)
-    return {
-        "ok": gone,
-        "code": completed.returncode,
-        "seconds": round(time.time() - started, 1),
-        "message": (
-            "Uninstalled." if gone else
-            "The uninstaller closed but the program is still registered. "
-            "It may have been cancelled, or it may need a restart to finish."
-        ),
-    }
+    normal = str(program.get("uninstall") or "").strip()
+    quiet = str(program.get("quiet") or "").strip()
+    if not silent:
+        return normal or quiet
+    if quiet:
+        return quiet
+    if not normal:
+        return ""
+    if "msiexec" in normal.lower():
+        return re.sub(r"(?i)/[IX]\s*\{", "/X{", normal) + " /qn /norestart"
+    if re.search(r"(?i)unins\d+\.exe", normal):
+        return normal + " /VERYSILENT /SUPPRESSMSGBOXES /NORESTART"
+    if re.search(r'(?i)[\\/]uninst(all)?\.exe"?\s*$', normal):
+        return normal + " /S"
+    return ""
 
 
 def still_installed(program: dict) -> bool:

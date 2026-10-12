@@ -7,6 +7,7 @@ import mimetypes
 import os
 import platform
 import re
+import secrets
 import string
 import sys
 import threading
@@ -17,7 +18,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import catalog, download, feeds, library, pipeline, resolve, roms, scanners, sgdb, steam, uninstall, updater
+from . import (autoinstall, catalog, download, embed, feeds, installers, library, pipeline,
+               placement, resolve, roms, scanners, sgdb, steam, tools, torrentclient, torrents,
+               uninstall, updater, winproc)
 
 def _web_dir() -> Path:
     """Where index.html lives, running from source or from a built binary.
@@ -39,10 +42,11 @@ WEB_DIR = _web_dir()
 
 STATE: dict = {"steam_root": None, "users": [], "games": [], "notes": []}
 
-# Folder samples between polls, and what has already been reported, so the
-# same finished download is not announced on every tick.
-WATCH: dict = {}
-WATCH_SEEN: dict = {}
+# Every API request must carry this. The page gets it when it loads; a web
+# page on any other site does not, so it cannot drive the app through the
+# browser - which matters now that the app can download and install by
+# itself.
+TOKEN = secrets.token_urlsafe(24)
 
 
 def json_response(handler: BaseHTTPRequestHandler, payload, status: int = 200) -> None:
@@ -89,8 +93,13 @@ def list_drives() -> list[str]:
 EXECUTABLE_SUFFIXES = {".exe", ".bat", ".cmd", ".sh", ".appimage", ".x86_64", ".bin", ""}
 
 
-def browse(path: str, with_files: bool = False) -> dict:
-    """List folders, and optionally the runnable files, under one path."""
+def browse(path: str, with_files: bool = False, all_files: bool = False) -> dict:
+    """List folders, and optionally files, under one path.
+
+    ``with_files`` adds runnable files, for picking an emulator;
+    ``all_files`` adds everything with sizes, for looking inside a folder
+    without leaving the app.
+    """
     target = Path(path).expanduser() if path else Path.home()
     if not target.is_dir():
         # A path to a file means the caller wants that file's folder shown.
@@ -109,6 +118,18 @@ def browse(path: str, with_files: bool = False) -> dict:
                 continue
             if child.is_dir():
                 dirs.append({"name": child.name, "path": str(child)})
+            elif all_files:
+                try:
+                    size = child.stat().st_size
+                except OSError:
+                    size = 0
+                name = child.name.lower()
+                kind = ("archive" if installers.is_archive(child)
+                        else "installer" if name.endswith((".msi",)) or (
+                            name.endswith(".exe") and any(h in name for h in installers.INSTALLER_HINTS))
+                        else "program" if name.endswith((".exe", ".appimage", ".sh", ".x86_64"))
+                        else "file")
+                files.append({"name": child.name, "path": str(child), "size": size, "kind": kind})
             elif with_files and child.suffix.lower() in EXECUTABLE_SUFFIXES:
                 if child.suffix or os.access(child, os.X_OK):
                     files.append({"name": child.name, "path": str(child)})
@@ -343,36 +364,28 @@ def download_job(job: library.Job, url: str, folder: str) -> None:
     job.result = result
     job.message = f"Saved {result['name']}"
 
-
-def install_job(job: library.Job, path: str) -> None:
-    """Run an installer, then report what it registered on the system."""
-    job.total = 2
-    job.stage = "installing"
-    job.message = "The installer window is open; answer it there"
-
-    before = {p["id"] for p in uninstall.list_programs()}
-    outcome = download.run_installer(path)
-    job.done = 1
-    job.log.append(outcome.get("message", ""))
-
-    job.stage = "checking"
-    job.message = "Seeing what was installed"
-    added = [p for p in uninstall.list_programs() if p["id"] not in before]
-    job.done = 2
-
-    job.result = {"ok": bool(outcome.get("ok")), "message": outcome.get("message", ""),
-                  "installed": added}
-    job.message = (f"Installed {added[0]['name']}" if added
-                   else outcome.get("message", "Finished"))
+    # With automatic installing on, a finished download goes straight into
+    # the queue, exactly as one arriving in the downloads folder would.
+    settings = library.load_settings()
+    if settings.get("auto_install"):
+        info = installers.inspect(result["path"])
+        if info["kind"] not in ("unsupported",):
+            task = autoinstall.QUEUE.add(result["path"], auto=True, origin="download")
+            job.result["queued"] = task.id
+            job.message = f"Saved {result['name']}; installing it now"
 
 
 def uninstall_job(job: library.Job, program: dict, silent: bool, user) -> None:
     """Hand off to the program's uninstaller, then look for what it left."""
     job.total = 2
     job.stage = "uninstalling"
-    job.message = f"{program.get('name')} — answer its uninstaller window"
+    if autoinstall.PROGRAM_LOCK.locked():
+        job.message = "Waiting for the installer that is running to finish"
+    else:
+        job.message = (f"Removing {program.get('name')} quietly" if silent
+                       else f"{program.get('name')} \u2014 answer its uninstaller")
 
-    outcome = uninstall.run_uninstaller(program, silent=silent)
+    outcome = autoinstall.run_uninstaller(program, silent=silent)
     job.done = 1
     job.log.append(outcome.get("message", ""))
 
@@ -398,6 +411,163 @@ def uninstall_job(job: library.Job, program: dict, silent: bool, user) -> None:
     job.message = outcome.get("message", "")
 
 
+def seven_zip_job(job: library.Job) -> None:
+    job.stage = "fetching"
+    job.total = 3
+
+    def progress(message: str) -> None:
+        job.done = min(job.done + 1, 3)
+        job.message = message
+        job.log.append(message)
+
+    path = tools.fetch_seven_zip(progress)
+    job.done = job.total
+    job.result = {"path": path}
+    job.message = "7-Zip is ready"
+    autoinstall.QUEUE.retry_waiting("sevenzip")
+
+
+# --------------------------------------------------------------------------
+# installs and everything around them
+# --------------------------------------------------------------------------
+
+def stage_games(games: list[dict]) -> None:
+    """Put freshly installed games on the Add games shelf."""
+    settings = library.load_settings()
+    prefer_direct = bool(settings.get("prefer_direct"))
+    if not STATE.get("games"):
+        saved = library.load_session()
+        STATE["games"] = saved["games"]
+        STATE["matches"] = saved["matches"]
+    merged = {g["uid"]: g for g in STATE.get("games") or []}
+    for game in games:
+        game.setdefault("uid", uuid.uuid4().hex[:12])
+        game["short_id"] = library.preview_short_id(game, prefer_direct)
+        merged[game["uid"]] = game
+    STATE["games"] = sorted(merged.values(), key=lambda g: g["title"].lower())
+    library.save_session(STATE["games"], STATE.get("matches") or {})
+
+
+_STEAM_SEEN = {"at": 0.0, "running": False}
+_TORRENTS_SEEN: dict = {"at": 0.0, "items": [], "error": "", "key": ""}
+_CACHE_LOCK = threading.Lock()
+
+
+def steam_running_cached() -> bool:
+    """Steam's state, looked up at most every few seconds.
+
+    Asking means running tasklist or pgrep, and the interface asks on
+    every poll.
+    """
+    with _CACHE_LOCK:
+        if time.time() - _STEAM_SEEN["at"] > 4:
+            _STEAM_SEEN["running"] = steam.steam_is_running()
+            _STEAM_SEEN["at"] = time.time()
+        return _STEAM_SEEN["running"]
+
+
+def torrent_status() -> dict:
+    """Progress of the torrents this app handed to the client."""
+    settings = library.load_settings()
+    tracked = settings.get("torrents") or []
+    client = torrentclient.from_settings(settings.get("torrent_client"))
+    if not tracked or client is None:
+        return {"items": [], "client": "", "error": ""}
+    key = ",".join(sorted(t.get("hash", "") for t in tracked))
+    with _CACHE_LOCK:
+        fresh = time.time() - _TORRENTS_SEEN["at"] < 3 and _TORRENTS_SEEN["key"] == key
+    if not fresh:
+        try:
+            found = {t["hash"]: t for t in client.status([t["hash"] for t in tracked
+                                                          if t.get("hash")])}
+            error = ""
+        except torrentclient.TorrentClientError as exc:
+            found, error = {}, str(exc)
+        items = []
+        for entry in tracked:
+            live = found.get(entry.get("hash", ""))
+            items.append({**entry, **(live or {}),
+                          "missing": live is None and not error})
+        with _CACHE_LOCK:
+            _TORRENTS_SEEN.update(at=time.time(), items=items, error=error, key=key)
+    return {"items": _TORRENTS_SEEN["items"], "client": client.label,
+            "error": _TORRENTS_SEEN["error"]}
+
+
+def activity(since: int) -> dict:
+    """Everything the interface polls for: events, installs, the held window."""
+    seq, events = autoinstall.QUEUE.events_since(since)
+    return {
+        "seq": seq,
+        "events": events,
+        "tasks": autoinstall.QUEUE.snapshot(),
+        "busy": autoinstall.QUEUE.busy(),
+        "embed": embed.MANAGER.current(),
+        "steam_running": steam_running_cached(),
+        "torrents": torrent_status(),
+    }
+
+
+def library_state() -> dict:
+    settings = library.load_settings()
+    return {
+        "folders": placement.describe_all(settings.get("library_folders") or []),
+        "auto_install": bool(settings.get("auto_install")),
+        "ssd_policy": settings.get("ssd_policy", "strict"),
+        "prefer_ssd_recommended": bool(settings.get("prefer_ssd_recommended")),
+        "install_mode": settings.get("install_mode", "classic"),
+        "delete_after_install": bool(settings.get("delete_after_install")),
+        "auto_add_to_steam": bool(settings.get("auto_add_to_steam")),
+        "watch_incoming": bool(settings.get("watch_incoming")),
+        "incoming_folder": settings.get("incoming_folder", ""),
+        "backlog": len(autoinstall.WATCHER.backlog()) if settings.get("incoming_folder") else 0,
+    }
+
+
+LIBRARY_KEYS = {"auto_install": bool, "prefer_ssd_recommended": bool,
+                "delete_after_install": bool, "auto_add_to_steam": bool,
+                "watch_incoming": bool}
+
+
+def save_library(payload: dict) -> dict:
+    """Store library settings, cleaned, and react to switches being flipped."""
+    before = library.load_settings()
+    patch: dict = {}
+    if "library_folders" in payload:
+        folders = []
+        seen = set()
+        for item in payload.get("library_folders") or []:
+            path = str((item or {}).get("path", "")).strip()
+            if not path or path.lower() in seen:
+                continue
+            seen.add(path.lower())
+            kind = str(item.get("kind", "auto")).lower()
+            try:
+                reserve = max(0.0, min(float(item.get("reserve_gb", 10)), 100000.0))
+            except (TypeError, ValueError):
+                reserve = 10.0
+            folders.append({"path": path, "kind": kind if kind in ("auto", "ssd", "hdd") else "auto",
+                            "reserve_gb": reserve, "enabled": item.get("enabled", True) is not False})
+        patch["library_folders"] = folders
+    for key, kind in LIBRARY_KEYS.items():
+        if key in payload:
+            patch[key] = kind(payload[key])
+    if payload.get("ssd_policy") in placement.POLICIES:
+        patch["ssd_policy"] = payload["ssd_policy"]
+    if payload.get("install_mode") in ("classic", "quiet"):
+        patch["install_mode"] = payload["install_mode"]
+    library.save_settings(patch)
+
+    # Switching watching on means "from now on": what is already in the
+    # folder becomes the starting point instead of a pile to install.
+    was_watching = before.get("auto_install") or before.get("watch_incoming")
+    now = library.load_settings()
+    if (now.get("auto_install") or now.get("watch_incoming")) and not was_watching:
+        autoinstall.WATCHER.rebaseline()
+    autoinstall.WATCHER.poke.set()
+    return library_state()
+
+
 # --------------------------------------------------------------------------
 # request handling
 # --------------------------------------------------------------------------
@@ -419,6 +589,35 @@ class Handler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError):
             return {}
 
+    def allowed(self, need_token: bool) -> bool:
+        """Refuse anything not from this app's own page.
+
+        The Host header defeats DNS rebinding, where a hostile site points
+        its own name at 127.0.0.1; the token defeats any other site simply
+        posting to this port from someone's browser.
+        """
+        port = self.server.server_address[1]
+        host = (self.headers.get("Host") or "").lower()
+        if host not in (f"127.0.0.1:{port}", f"localhost:{port}"):
+            json_response(self, {"error": "Forbidden"}, 403)
+            return False
+        if need_token and not secrets.compare_digest(
+                self.headers.get("X-NSGM-Token") or "", TOKEN):
+            json_response(self, {"error": "Forbidden"}, 403)
+            return False
+        return True
+
+    def send_index(self) -> None:
+        page = (WEB_DIR / "index.html").read_text("utf-8")
+        page = page.replace("</head>", f'<meta name="nsgm-token" content="{TOKEN}">\n</head>', 1)
+        blob = page.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(blob)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(blob)
+
     def send_file(self, path: Path) -> None:
         if not path.is_file():
             json_response(self, {"error": "Not found"}, 404)
@@ -439,8 +638,10 @@ class Handler(BaseHTTPRequestHandler):
         path = route.path
         query = parse_qs(route.query)
 
+        if not self.allowed(need_token=path.startswith("/api/")):
+            return None
         if path in ("/", "/index.html"):
-            return self.send_file(WEB_DIR / "index.html")
+            return self.send_index()
         if path.startswith("/static/"):
             name = unquote(path[len("/static/"):])
             candidate = (WEB_DIR / name).resolve()
@@ -477,13 +678,24 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, {"games": library.managed_list(user)})
 
         if path == "/api/browse":
+            files = (query.get("files") or ["0"])[0]
             return json_response(
                 self,
-                browse(
-                    (query.get("path") or [""])[0],
-                    (query.get("files") or ["0"])[0] == "1",
-                ),
+                browse((query.get("path") or [""])[0], files == "1", files == "all"),
             )
+
+        if path == "/api/activity":
+            try:
+                since = int((query.get("since") or ["0"])[0])
+            except ValueError:
+                since = 0
+            return json_response(self, activity(since))
+
+        if path == "/api/library":
+            return json_response(self, library_state())
+
+        if path == "/api/install/backlog":
+            return json_response(self, {"items": autoinstall.WATCHER.backlog()})
 
         if path == "/api/feeds":
             settings = library.load_settings()
@@ -531,6 +743,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if not self.allowed(need_token=True):
+            return None
         payload = self.read_json()
 
         try:
@@ -551,7 +765,17 @@ class Handler(BaseHTTPRequestHandler):
                 return json_response(self, {"stopping": True})
 
             if path == "/api/settings":
-                library.save_settings(payload.get("settings") or {})
+                incoming = dict(payload.get("settings") or {})
+                client = incoming.get("torrent_client")
+                if client is not None:
+                    kind = str((client or {}).get("kind", "system"))
+                    incoming["torrent_client"] = {
+                        "kind": kind if kind in torrentclient.KINDS else "system",
+                        "url": str(client.get("url", "")).strip()[:200],
+                        "username": str(client.get("username", ""))[:120],
+                        "password": str(client.get("password", ""))[:200],
+                    }
+                library.save_settings(incoming)
                 return json_response(self, {"settings": library.load_settings()})
 
             if path == "/api/scan":
@@ -596,6 +820,7 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == "/api/apply":
                 user = find_user(payload.get("user"))
+                library.save_settings({"account": user.id3})
                 settings = library.load_settings()
                 settings.update(payload.get("settings") or {})
                 chosen = payload.get("games") or []
@@ -764,70 +989,6 @@ class Handler(BaseHTTPRequestHandler):
                 except pipeline.PipelineError as exc:
                     return json_response(self, {"error": str(exc)}, 400)
 
-            if path == "/api/incoming/poll":
-                # Two looks at the folder, compared. A client that gives no
-                # completion signal still tells us by going quiet.
-                folder = str(payload.get("folder", "")).strip()
-                if not folder:
-                    return json_response(self, {"error": "Choose a folder first."}, 400)
-                current = pipeline.sample(folder)
-                previous = WATCH.get(folder) or {}
-                finished = pipeline.finished_since(previous, current)
-                WATCH[folder] = current
-                already = WATCH_SEEN.setdefault(folder, set())
-                fresh = [p for p in finished if p not in already]
-                already.update(fresh)
-                return json_response(
-                    self,
-                    {
-                        "finished": [
-                            {"path": p, "name": scanners.prettify(Path(p).name),
-                             "state": pipeline.classify(Path(p)),
-                             "installer": pipeline.installer_in(p)}
-                            for p in fresh
-                        ],
-                        "watching": len(current),
-                    },
-                )
-
-            if path == "/api/incoming/install":
-                # Snapshot first: what appears afterwards is what it added.
-                target = str(payload.get("path", "")).strip()
-                installer = pipeline.installer_in(target) or target
-                STATE["before_install"] = pipeline.installed_snapshot()
-                try:
-                    started = pipeline.launch(installer)
-                except pipeline.PipelineError as exc:
-                    return json_response(self, {"error": str(exc)}, 400)
-                return json_response(
-                    self, {"started": started["started"],
-                           "known": len(STATE["before_install"])}
-                )
-
-            if path == "/api/incoming/installed":
-                before = STATE.get("before_install")
-                if before is None:
-                    return json_response(
-                        self, {"error": "Start an installer first."}, 400)
-                fresh = pipeline.newly_installed(before)
-                settings = library.load_settings()
-                staged = []
-                for game in fresh:
-                    game = dict(game)
-                    game["tags"] = list(game.get("tags") or []) + ["Installed"]
-                    game["uid"] = uuid.uuid4().hex[:12]
-                    game["short_id"] = library.preview_short_id(
-                        game, bool(settings.get("prefer_direct")))
-                    staged.append(game)
-                if staged:
-                    merged = {g["uid"]: g for g in STATE.get("games") or []}
-                    for game in staged:
-                        merged[game["uid"]] = game
-                    STATE["games"] = sorted(merged.values(),
-                                            key=lambda g: g["title"].lower())
-                    STATE["before_install"] = pipeline.installed_snapshot()
-                return json_response(self, {"games": staged})
-
             if path == "/api/incoming/stage":
                 # Staged items join the normal scan results, so adding them to
                 # Steam runs through exactly the same path as anything else.
@@ -863,11 +1024,140 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return json_response(self, {"job": job.id})
 
-            if path == "/api/magnet/open":
+            if path in ("/api/magnet/open", "/api/torrent/add"):
+                return json_response(self, *add_torrent(str(payload.get("url", "")),
+                                                        str(payload.get("name", ""))))
+
+            if path == "/api/torrent/test":
+                client = torrentclient.from_settings(payload.get("config") or {})
+                if client is None:
+                    return json_response(self, {"ok": True, "message":
+                                                "Magnets will open in whatever app the system uses."})
                 try:
-                    return json_response(self, resolve.open_magnet(str(payload.get("url", ""))))
-                except resolve.ResolveError as exc:
-                    return json_response(self, {"error": str(exc)}, 400)
+                    version = client.version()
+                except torrentclient.TorrentClientError as exc:
+                    return json_response(self, {"ok": False, "message": str(exc)})
+                return json_response(self, {"ok": True,
+                                            "message": f"Connected to {client.label} {version}."})
+
+            if path == "/api/torrent/forget":
+                wanted = str(payload.get("hash", "")).lower()
+                kept = [t for t in library.load_settings().get("torrents") or []
+                        if t.get("hash") != wanted]
+                library.save_settings({"torrents": kept})
+                return json_response(self, {"torrents": kept})
+
+            if path == "/api/install/analyse":
+                target = str(payload.get("path", "")).strip()
+                if not target:
+                    return json_response(self, {"error": "Choose something to install."}, 400)
+                found = autoinstall.QUEUE.analyse(target)
+                if found.get("error"):
+                    return json_response(self, found, 400)
+                return json_response(self, found)
+
+            if path == "/api/install/start":
+                target = str(payload.get("path", "")).strip()
+                if not target or not Path(target).expanduser().exists():
+                    return json_response(self, {"error": "That download is no longer there."}, 400)
+                try:
+                    size = int(float(payload.get("size_gb") or 0) * placement.GB)
+                except (TypeError, ValueError):
+                    size = 0
+                task = autoinstall.QUEUE.add(
+                    target, name=str(payload.get("name", "")),
+                    target_root=str(payload.get("target_root", "")),
+                    folder_name=str(payload.get("folder_name", "")),
+                    mode=str(payload.get("mode", "")), ssd=str(payload.get("ssd", "")),
+                    size=size, auto=bool(payload.get("auto")),
+                    origin=str(payload.get("origin", "manual")),
+                    installer_asks=bool(payload.get("installer_asks")))
+                return json_response(self, {"task": task.to_json()})
+
+            if path == "/api/install/cancel":
+                problem = autoinstall.QUEUE.cancel(str(payload.get("id", "")))
+                if problem:
+                    return json_response(self, {"error": problem}, 400)
+                return json_response(self, {"ok": True})
+
+            if path == "/api/install/retry":
+                task = autoinstall.QUEUE.retry(str(payload.get("id", "")),
+                                               target_root=str(payload.get("target_root", "")),
+                                               mode=str(payload.get("mode", "")))
+                if not task:
+                    return json_response(self, {"error": "That install is not in the list."}, 400)
+                return json_response(self, {"task": task.to_json()})
+
+            if path == "/api/install/remove":
+                autoinstall.QUEUE.remove(str(payload.get("id", "")))
+                return json_response(self, {"ok": True})
+
+            if path == "/api/install/clear":
+                autoinstall.QUEUE.clear_finished()
+                return json_response(self, {"ok": True})
+
+            if path == "/api/install/backlog":
+                wanted = set(payload.get("paths") or [])
+                queued = 0
+                for item in autoinstall.WATCHER.backlog():
+                    if wanted and item["path"] not in wanted:
+                        continue
+                    autoinstall.QUEUE.add(item["path"], auto=True, origin="incoming")
+                    queued += 1
+                return json_response(self, {"queued": queued})
+
+            if path == "/api/library/save":
+                return json_response(self, save_library(payload))
+
+            if path == "/api/incoming/watch":
+                return json_response(self, save_library({"watch_incoming": bool(payload.get("on"))}))
+
+            if path == "/api/embed/place":
+                embed.MANAGER.place(bool(payload.get("visible")), payload.get("rect"))
+                return json_response(self, {"ok": True})
+
+            if path == "/api/embed/popout":
+                embed.MANAGER.pop_out()
+                return json_response(self, {"embed": embed.MANAGER.current()})
+
+            if path == "/api/embed/bringback":
+                embed.MANAGER.bring_back()
+                return json_response(self, {"embed": embed.MANAGER.current()})
+
+            if path == "/api/embed/front":
+                embed.MANAGER.front()
+                return json_response(self, {"ok": True})
+
+            if path == "/api/steam/close":
+                outcome = steam.close_steam()
+                _STEAM_SEEN["at"] = 0.0
+                return json_response(self, {**outcome, "running": steam_running_cached()})
+
+            if path == "/api/steam/start":
+                return json_response(self, steam.open_steam())
+
+            if path == "/api/tools/7zip":
+                job = library.start_job(seven_zip_job)
+                return json_response(self, {"job": job.id})
+
+            if path == "/api/reveal":
+                return json_response(self, download.reveal(payload.get("path", "")))
+
+            if path == "/api/restart-elevated":
+                if autoinstall.QUEUE.busy():
+                    return json_response(self, {"error": "Wait until the current install "
+                                                         "finishes, then restart."}, 400)
+                library.save_settings({"run_as_admin": True})
+                if not winproc.relaunch_elevated(["--no-elevate"]):
+                    return json_response(self, {"error": "The permission prompt was declined, "
+                                                         "so the app keeps running as it is."}, 400)
+
+                def leave() -> None:
+                    time.sleep(0.6)
+                    embed.MANAGER.release_all()
+                    os._exit(0)
+                threading.Thread(target=leave, daemon=True).start()
+                return json_response(self, {"restarting": True})
 
             if path == "/api/download":
                 url = str(payload.get("url", "")).strip()
@@ -879,15 +1169,6 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == "/api/download/reveal":
                 return json_response(self, download.reveal(payload.get("path", "")))
-
-            if path == "/api/download/run":
-                target = str(payload.get("path", ""))
-                if not download.is_installer(target):
-                    return json_response(
-                        self, {"error": "That file is not an installer. Open the folder "
-                                         "and unpack it yourself."}, 400)
-                job = library.start_job(install_job, target)
-                return json_response(self, {"job": job.id})
 
             if path == "/api/uninstall":
                 program = payload.get("program") or {}
@@ -951,6 +1232,11 @@ class Handler(BaseHTTPRequestHandler):
             "version": __import__("nsgm").__version__,
 
             "windowed": bool(STATE.get("windowed")),
+            "embed_available": embed.available(),
+            "admin": winproc.is_admin(),
+            "seven_zip": tools.seven_zip(),
+            "can_fetch_7zip": tools.can_fetch(),
+            "torrent_kinds": list(torrentclient.KINDS),
         }
 
 
@@ -963,7 +1249,56 @@ def list_users_safe(root) -> list:
         return []
 
 
+def add_torrent(url: str, name: str = "") -> tuple[dict, int]:
+    """Give a magnet or .torrent link to the configured client, or the system."""
+    settings = library.load_settings()
+    client = torrentclient.from_settings(settings.get("torrent_client"))
+    if client is None:
+        if not url.lower().startswith("magnet:"):
+            return {"error": "Set up a torrent client in Settings to send .torrent files to it."}, 400
+        try:
+            return resolve.open_magnet(url), 200
+        except resolve.ResolveError as exc:
+            return {"error": str(exc)}, 400
+
+    torrent = b""
+    magnet = ""
+    if url.lower().startswith("magnet:"):
+        magnet = url
+        info_hash = torrentclient.info_hash(url)
+        label = name or resolve.parse_magnet(url).get("name") or "Torrent"
+    elif url.lower().startswith(("http://", "https://")):
+        try:
+            from . import archive
+            torrent = archive.fetch_bytes(url)
+            info = torrents.read(torrent)
+        except (OSError, torrents.TorrentError) as exc:
+            return {"error": f"That .torrent could not be read ({exc})."}, 400
+        info_hash = info["hash"]
+        label = name or info["name"] or "Torrent"
+    else:
+        return {"error": "That is not a magnet or a .torrent link."}, 400
+
+    save_path = str(settings.get("incoming_folder") or "")
+    try:
+        client.add(magnet=magnet, torrent=torrent, save_path=save_path)
+    except torrentclient.TorrentClientError as exc:
+        return {"error": str(exc)}, 502
+    tracked = [t for t in settings.get("torrents") or [] if t.get("hash") != info_hash]
+    tracked.append({"hash": info_hash, "name": label[:160], "added": time.time()})
+    library.save_settings({"torrents": tracked[-60:]})
+    with _CACHE_LOCK:
+        _TORRENTS_SEEN["at"] = 0.0
+    where = f" into {save_path}" if save_path else ""
+    return {"added": True, "client": client.label, "hash": info_hash,
+            "message": f"Downloading with {client.label}{where}."}, 200
+
+
 def serve(port: int = 8731, open_browser: bool = True) -> None:
+    autoinstall.QUEUE.on_staged = stage_games
+    autoinstall.QUEUE.load()
+    autoinstall.QUEUE.start()
+    autoinstall.WATCHER.start()
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}/"
     print(f"  Game manager ready at {url}")

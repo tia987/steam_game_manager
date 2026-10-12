@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 import socket
 import sys
 
-from . import __version__, desktop, server, steam
+from . import __version__, desktop, embed, library, server, steam, winproc
 
 
 def free_port(preferred: int) -> int:
@@ -28,7 +29,22 @@ def main() -> int:
     parser.add_argument("--browser", action="store_true",
                         help="use your web browser instead of an app window")
     parser.add_argument("--version", action="version", version=f"nsgm {__version__}")
+    # Passed by the elevated copy to itself, so declining or failing the
+    # prompt can never turn into a loop of relaunches.
+    parser.add_argument("--no-elevate", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    # Installers that ask for administrator rights can only be held inside
+    # the app's window when the app has them too. With the setting on, the
+    # app restarts itself with them before doing anything else; if the
+    # prompt is declined it simply carries on without.
+    if os.name == "nt" and not args.no_elevate and not winproc.is_admin():
+        try:
+            wanted = library.load_settings().get("run_as_admin")
+        except Exception:
+            wanted = False
+        if wanted and winproc.relaunch_elevated(["--no-elevate"]):
+            return 0
 
     # Clear away the copy the last update left behind. It cannot be
     # deleted while it is the program that is running, so it waits here.
@@ -60,7 +76,9 @@ def main() -> int:
     if want_window:
         print(f"  Opening a window at {url}\n")
         server.STATE["windowed"] = True
-        desktop.run(url, lambda: server.serve(port, open_browser=False), True)
+        embed.ENABLED = True
+        desktop.run(url, lambda: server.serve(port, open_browser=False), True,
+                    on_closing=embed.MANAGER.release_all)
     else:
         server.serve(port, open_browser=True)
     return 0

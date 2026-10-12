@@ -106,6 +106,23 @@ forces that on any build. There is no console window in a release build:
 the app has a window, and a terminal behind it was the main thing that
 made this look unfinished.
 
+### Installers inside the window
+
+On Windows, an installer's own window is re-parented into the app's
+window (`nsgm/embed.py`), which needs the app window to be a real native
+window: in a browser tab (`--browser`, or a source run without `pywebview`)
+installers open in their own windows instead. Processes are started and
+followed by `nsgm/winproc.py`. Both are plain Windows API calls through
+`ctypes`, so they add nothing to the build, and they can only be exercised
+on Windows: the workflow's "Check the Windows helpers" step does that on
+the Windows runner, starting a process tree, following it to the end and
+reading its exit code.
+
+Windows only lets a program hold another program's window when both run
+with the same rights. The *Start with administrator rights* setting makes
+the app restart itself elevated (one UAC prompt per start), passing
+`--no-elevate` so a declined prompt can never loop.
+
 ## Updates
 
 `nsgm/updater.py` asks the GitHub releases API what the newest tag is and

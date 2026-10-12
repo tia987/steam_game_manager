@@ -119,7 +119,7 @@ jobs:
         shell: bash
         working-directory: ${{ steps.locate.outputs.root }}
         run: |
-          python -c "import nsgm, nsgm.server, nsgm.resolve, nsgm.steam; print('imports fine')"
+          python -c "import nsgm, nsgm.server, nsgm.resolve, nsgm.steam, nsgm.autoinstall, nsgm.embed, nsgm.winproc, nsgm.drives, nsgm.installers, nsgm.placement, nsgm.storeinfo, nsgm.torrentclient, nsgm.tools; print('imports fine')"
           python -c "
           from nsgm import vdf, steam
           entry = steam.build_shortcut('Test', '/tmp/game.exe')
@@ -127,6 +127,36 @@ jobs:
           assert vdf.binary_loads(blob)['shortcuts']['0'] == entry
           assert steam.shortcut_id(entry['Exe'], entry['AppName']) == steam.entry_short_id(entry)
           print('shortcut round trip fine')
+          "
+
+      # The process and window helpers are Windows API calls made through
+      # ctypes, which only a Windows machine can exercise. Importing them
+      # binds every function; this then starts a process tree, follows it
+      # to the end and reads its exit code, and asks about the system drive.
+      - name: Check the Windows helpers
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        working-directory: ${{ steps.locate.outputs.root }}
+        run: |
+          python -c "
+          import time
+          from nsgm import winproc, drives, embed
+          print('admin:', winproc.is_admin())
+          print('system drive:', drives.detect_kind('C:/'))
+          print('windows on screen:', len(embed._top_level_windows()), 'host:', embed.find_host())
+          launched = winproc.launch('cmd.exe', '/c ping -n 3 127.0.0.1 >nul & exit 3')
+          tree = winproc.ProcessTree(launched)
+          seen = set()
+          deadline = time.time() + 30
+          while tree.alive() and time.time() < deadline:
+              seen |= tree.pids()
+              time.sleep(0.2)
+          assert not tree.alive(), 'the tree never finished'
+          assert len(seen) >= 2, f'the child process was not followed: {seen}'
+          assert tree.exit_code() == 3, tree.exit_code()
+          tree.close()
+          assert winproc.split_command('MsiExec.exe /X{1}') == ('MsiExec.exe', '/X{1}')
+          print('process tree fine:', sorted(seen))
           "
 
       - name: Build

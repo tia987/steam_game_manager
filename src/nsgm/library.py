@@ -47,6 +47,20 @@ DEFAULT_SETTINGS: dict = {
     "watched": [],   # pages watched for new downloads
     "hide_steam_games": True,
     "github_token": "",
+    # installing ------------------------------------------------------------
+    "library_folders": [],   # [{"path", "kind": auto|ssd|hdd, "reserve_gb", "enabled"}], by priority
+    "auto_install": False,   # install finished downloads without asking
+    "ssd_policy": "strict",  # strict | prefer | ignore, for games that need an SSD
+    "prefer_ssd_recommended": False,
+    "install_mode": "classic",   # classic: the installer's own screens; quiet: unattended
+    "delete_after_install": False,
+    "auto_add_to_steam": False,
+    "watch_incoming": False,
+    "incoming_folder": "",
+    "run_as_admin": False,   # Windows: lets installers that elevate stay inside the app
+    "torrent_client": {"kind": "system", "url": "", "username": "", "password": ""},
+    "torrents": [],          # [{"hash", "name", "added"}] handed to the client by this app
+    "account": "",
 }
 
 
@@ -153,6 +167,18 @@ def collect_games(settings: dict) -> tuple[list[dict], list[str]]:
         if not folder.get("path"):
             continue
         games.extend(scanners.scan_folder(folder["path"], int(folder.get("depth", 1)), notes))
+
+    # Library folders are where installs go, so what is in them is looked
+    # at too; otherwise a game installed last week vanished from the shelf
+    # on the next scan.
+    scanned = {str(Path((f.get("path") if isinstance(f, dict) else f) or "").expanduser()).lower()
+               for f in settings.get("folders") or [] if f}
+    for folder in settings.get("library_folders") or []:
+        path = folder.get("path") if isinstance(folder, dict) else folder
+        if not path or str(Path(path).expanduser()).lower() in scanned:
+            continue
+        if Path(path).expanduser().is_dir():
+            games.extend(scanners.scan_folder(path, 1, notes))
 
     for parser in settings.get("parsers") or []:
         if parser.get("enabled", True):

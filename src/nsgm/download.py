@@ -1,13 +1,8 @@
-"""Fetch a file, then hand it to the person to install.
+"""Fetch a file to disk, resuming where a previous attempt stopped.
 
-Deliberately does not run anything by itself. A downloaded installer is
-opened only when the person presses Run, and then it is the installer's
-own window that asks where to install and everything else — which is
-what "follow the options of the installer" actually means.
-
-Executing a freshly downloaded binary without being asked is how a lot
-of machines get compromised, and it would not help here anyway, since
-the installer needs to show its interface regardless.
+Nothing downloaded is run from here. Installing is ``autoinstall``'s
+job, and it only starts by itself when automatic installing has been
+switched on; otherwise a person presses Install.
 """
 
 from __future__ import annotations
@@ -16,7 +11,6 @@ import hashlib
 import os
 import platform
 import re
-import subprocess
 import time
 
 from . import proc
@@ -204,7 +198,7 @@ def download(url: str, folder: str | Path, progress=None, timeout: int = 60) -> 
 
 
 # --------------------------------------------------------------------------
-# handing over to the person
+# the system file manager, for when the in-app folder view is not enough
 # --------------------------------------------------------------------------
 
 def reveal(path: str | Path) -> dict:
@@ -222,41 +216,3 @@ def reveal(path: str | Path) -> dict:
         return {"ok": True, "message": ""}
     except OSError as exc:
         return {"ok": False, "message": f"Could not open the folder ({exc})."}
-
-
-def run_installer(path: str | Path, timeout: int = 7200) -> dict:
-    """Start an installer and wait for it to close.
-
-    The installer draws its own interface. Everything about where the
-    game goes and which components to include is answered there, not
-    here.
-    """
-    target = Path(path)
-    if not target.exists():
-        return {"ok": False, "message": "That file is no longer there."}
-    if not is_installer(target):
-        return {"ok": False,
-                "message": f"{target.suffix or 'That file'} is not an installer. "
-                           "Open the folder and unpack it yourself."}
-    if not IS_WINDOWS:
-        return {"ok": False, "message": "Running installers is only supported on Windows."}
-
-    started = time.time()
-    try:
-        if target.suffix.lower() == ".msi":
-            completed = subprocess.run(["msiexec", "/i", str(target)], timeout=timeout)
-        else:
-            completed = subprocess.run([str(target)], timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "message": "The installer is still open; leaving it running."}
-    except OSError as exc:
-        return {"ok": False, "message": f"Could not start the installer ({exc})."}
-
-    return {
-        "ok": completed.returncode == 0,
-        "code": completed.returncode,
-        "seconds": round(time.time() - started, 1),
-        "message": ("The installer finished." if completed.returncode == 0
-                    else f"The installer exited with code {completed.returncode}, "
-                         "which usually means it was cancelled."),
-    }

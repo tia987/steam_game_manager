@@ -18,21 +18,25 @@
   </div>
 
   <div class="rail__group">
-    <label class="field field--inline">
-      <span class="field__label">Account</span>
+    <label class="field field--inline" title="Steam account">
+      <span class="field__label rail__label">Account</span>
       <select id="account" class="input input--select"></select>
     </label>
-    <p id="steamState" class="pill" data-state="unknown">Checking Steam</p>
+    <button id="steamState" class="pill" type="button" data-state="unknown">Checking Steam</button>
   </div>
 
-  <div class="rail__group rail__group--end">
+  <nav class="rail__tabs" aria-label="Sections">
     <button id="tabLibrary" class="tab is-active" type="button">Add games</button>
     <button id="tabManaged" class="tab" type="button">Already added</button>
 
     <button id="tabGet" class="tab" type="button">Get software</button>
+    <button id="tabInstalls" class="tab" type="button">Installs<span class="tab__badge" id="installsBadge" hidden></span></button>
     <button id="tabCatalog" class="tab" type="button">Open source</button>
     <button id="tabFeeds" class="tab" type="button">What's out now</button>
     <button id="tabUninstall" class="tab" type="button">Uninstall</button>
+  </nav>
+
+  <div class="rail__group rail__group--end">
     <button id="updateBadge" class="icon-button" type="button" hidden
             style="border-color:var(--warn);color:var(--warn)"></button>
     <button id="openSettings" class="icon-button" type="button" title="Settings">Settings</button>
@@ -71,14 +75,10 @@
       <ul id="incomingList" class="stack"></ul>
       <label class="check" style="margin-top:8px">
         <input type="checkbox" id="incomingWatch">
-        <span>Watch for finished downloads</span>
+        <span id="incomingWatchLabel">Tell me when downloads finish</span>
       </label>
       <button id="incomingStage" class="button button--block" type="button" hidden>
         Stage ready items
-      </button>
-      <button id="incomingInstalled" class="button button--block" type="button"
-              style="margin-top:6px" hidden>
-        Installer done, add what it installed
       </button>
     </section>
 
@@ -247,6 +247,78 @@
 
     </section>
 
+    <section id="installsView" hidden>
+      <div class="toolbar">
+        <button id="installFile" class="button" type="button">Install a file&hellip;</button>
+        <div class="toolbar__actions">
+          <label class="switch">
+            <input type="checkbox" id="autoInstall">
+            <span class="switch__track" aria-hidden="true"></span>
+            <span>Install new downloads automatically</span>
+          </label>
+        </div>
+      </div>
+      <p class="summary" id="autoNote"></p>
+
+      <details class="watchbox" id="libraryBox" open>
+        <summary>Where games go <span class="watchbox__count" id="libraryCount"></span></summary>
+        <p class="panel__hint">
+          Tried top to bottom. A game goes into the first folder with room for it,
+          after leaving the space each folder keeps free.
+        </p>
+        <ol class="libraries" id="libraryList"></ol>
+        <div class="toolbar"><button id="libraryAdd" class="button" type="button">Add a folder</button></div>
+        <div class="libopts">
+          <label class="field"><span class="field__label">Games that need an SSD</span>
+            <select id="ssdPolicy" class="input input--select">
+              <option value="strict">Only on an SSD &mdash; wait if none has room</option>
+              <option value="prefer">An SSD first, a hard disk if none has room</option>
+              <option value="ignore">Like any other game</option>
+            </select>
+            <span class="field__note">Read from the game&rsquo;s Steam store requirements, and
+              changeable per install.</span></label>
+          <label class="field"><span class="field__label">When I press Install</span>
+            <select id="installMode" class="input input--select">
+              <option value="classic">Show the installer&rsquo;s own screens, inside this window</option>
+              <option value="quiet">Install quietly into the library</option>
+            </select>
+            <span class="field__note">Automatic installs are always quiet.</span></label>
+          <label class="check"><input type="checkbox" id="preferRecommended">
+            <span>Put games that only recommend an SSD on one first too</span></label>
+          <label class="check"><input type="checkbox" id="deleteAfter">
+            <span>Delete the download once it has installed</span></label>
+          <label class="check"><input type="checkbox" id="autoSteam">
+            <span>Add installed games to Steam straight away</span></label>
+        </div>
+      </details>
+
+      <div class="notice" id="sevenZipOffer" hidden>
+        <p>Some archives need 7-Zip, which is not on this computer. The official copy
+          (about 1.6&nbsp;MB from 7-zip.org) can be kept inside the app; nothing is installed.</p>
+        <button id="sevenZipGet" class="button button--accent" type="button">Get 7-Zip</button>
+      </div>
+      <div class="notice" id="backlogOffer" hidden>
+        <p id="backlogText"></p>
+        <button id="backlogGo" class="button" type="button">Install them</button>
+      </div>
+
+      <div id="torrentBlock" hidden>
+        <h3 class="section-title">Downloading <span class="section-title__aside" id="torrentClient"></span></h3>
+        <p class="notes" id="torrentError" hidden></p>
+        <ul class="tasks" id="torrentList"></ul>
+      </div>
+
+      <h3 class="section-title">Installs</h3>
+      <ul class="tasks" id="taskList"></ul>
+      <div id="historyBlock" hidden>
+        <div class="section-head">
+          <h3 class="section-title">Finished</h3>
+          <button id="historyClear" class="mini" type="button">Clear</button>
+        </div>
+        <ul class="tasks tasks--done" id="historyList"></ul>
+      </div>
+    </section>
+
   </main>
 </div>
 
@@ -390,8 +462,8 @@
   <div id="grabDone" hidden>
     <p class="summary" id="grabResult"></p>
     <div class="sheet__foot" style="justify-content:flex-start">
-      <button id="grabReveal" class="button" type="button">Open folder</button>
-      <button id="grabRun" class="button button--primary" type="button">Run installer</button>
+      <button id="grabReveal" class="button" type="button">Show in folder</button>
+      <button id="grabRun" class="button button--primary" type="button">Install</button>
     </div>
   </div>
   <div class="sheet__foot">
@@ -420,10 +492,110 @@
         GitHub allows 60 anonymous requests an hour, which the catalogue can use up.
         A read-only token raises that to 5000. No scopes required.
       </span></label>
+    <fieldset class="field">
+      <legend class="field__label">Torrent client</legend>
+      <select id="torrentKind" class="input input--select">
+        <option value="system">Whatever app opens magnet links</option>
+        <option value="qbittorrent">qBittorrent, through its Web UI</option>
+        <option value="transmission">Transmission, through remote access</option>
+      </select>
+      <div class="form form--tight" id="torrentFields" hidden>
+        <input id="torrentUrl" class="input input--mono" type="text" placeholder="http://127.0.0.1:8080">
+        <span class="field__row">
+          <input id="torrentUser" class="input" type="text" placeholder="Username (optional)" autocomplete="off">
+          <input id="torrentPass" class="input" type="password" placeholder="Password" autocomplete="off">
+        </span>
+        <span class="field__row field__row--center">
+          <button id="torrentTest" class="button" type="button">Test</button>
+          <span class="field__note" id="torrentTestResult"></span>
+        </span>
+      </div>
+      <span class="field__note">With a client connected, magnets download into your
+        finished-downloads folder in the background, and their progress shows under Installs.</span>
+    </fieldset>
+    <label class="check" id="adminRow" hidden><input type="checkbox" id="runAsAdmin">
+      <span>Start with administrator rights, so installers that ask for them open inside the app</span></label>
+    <p class="field__note" id="adminNote" hidden></p>
+    <p class="path" id="toolsPath"></p>
     <p class="path" id="configPath"></p>
   </div>
   <div class="sheet__foot">
     <button id="saveSettings" class="button button--primary" type="button">Save settings</button>
+  </div>
+</dialog>
+
+<!-- install sheet ------------------------------------------------------->
+<dialog id="installDialog" class="sheet sheet--narrow">
+  <form method="dialog" class="sheet__close"><button class="icon-button" value="close">Close</button></form>
+  <h2 class="sheet__title" id="installTitle">Install</h2>
+  <p class="install__facts" id="installFacts"></p>
+  <p class="notes" id="installError" hidden></p>
+  <div class="form" id="installForm">
+    <label class="field"><span class="field__label">Name</span>
+      <input id="installName" class="input" type="text"></label>
+    <label class="field"><span class="field__label">Install into</span>
+      <select id="installTarget" class="input input--select"></select>
+      <span class="field__note path" id="installWhere"></span></label>
+    <ul class="install__notes" id="installNotes"></ul>
+    <label class="field"><span class="field__label">Storage</span>
+      <select id="installSsd" class="input input--select">
+        <option value="">As the store says</option>
+        <option value="required">Needs an SSD</option>
+        <option value="any">Any drive is fine</option>
+      </select></label>
+    <fieldset class="field" id="installModes">
+      <legend class="field__label">How</legend>
+      <label class="check"><input type="radio" name="installMode" value="classic">
+        <span id="installClassicLabel">The installer&rsquo;s own screens, inside this window</span></label>
+      <label class="check"><input type="radio" name="installMode" value="quiet">
+        <span>Quietly, into the folder above</span></label>
+      <span class="field__note" id="installModeNote"></span>
+    </fieldset>
+  </div>
+  <div class="sheet__foot">
+    <button id="installGo" class="button button--primary" type="button">Install</button>
+  </div>
+</dialog>
+
+<!-- an installer's own window, held inside the app ---------------------->
+<dialog id="programDialog" class="sheet sheet--program">
+  <div class="program__head">
+    <div class="program__heading">
+      <h2 class="sheet__title" id="programTitle">Installer</h2>
+      <p class="program__sub" id="programSub"></p>
+    </div>
+    <div class="program__actions">
+      <button id="programFront" class="button" type="button" hidden>Bring to front</button>
+      <button id="programPop" class="button" type="button">Pop out</button>
+      <button id="programHide" class="button" type="button">Hide</button>
+      <button id="programStop" class="button button--danger" type="button">Stop</button>
+    </div>
+  </div>
+  <div class="program__stage" id="programStage">
+    <p class="program__placeholder" id="programPlaceholder">Starting&hellip;</p>
+  </div>
+</dialog>
+
+<!-- a folder, looked at without leaving the app --------------------------->
+<dialog id="folderDialog" class="sheet sheet--narrow">
+  <form method="dialog" class="sheet__close"><button class="icon-button" value="close">Close</button></form>
+  <h2 class="sheet__title" id="folderTitle">Folder</h2>
+  <p class="path" id="folderPath"></p>
+  <ul class="browse browse--files" id="folderList"></ul>
+  <div class="sheet__foot">
+    <button id="folderUp" class="button" type="button">Up one level</button>
+    <button id="folderSystem" class="button" type="button">Open in file manager</button>
+  </div>
+</dialog>
+
+<!-- questions, asked inside the app rather than in a system box ----------->
+<dialog id="askDialog" class="sheet sheet--narrow sheet--ask">
+  <h2 class="sheet__title" id="askTitle"></h2>
+  <p class="ask__body" id="askBody"></p>
+  <label class="check" id="askOptionRow" hidden><input type="checkbox" id="askOption"><span id="askOptionLabel"></span></label>
+  <div class="sheet__foot">
+    <button id="askNo" class="button" type="button">Cancel</button>
+    <button id="askYes" class="button button--primary" type="button">OK</button>
   </div>
 </dialog>
 
@@ -434,11 +606,12 @@
   <p class="job__message" id="jobMessage"></p>
   <pre class="job__log" id="jobLog"></pre>
   <div class="sheet__foot">
+    <button id="jobSteam" class="button" type="button" hidden>Start Steam</button>
     <button id="jobClose" class="button button--primary" type="button" disabled>Close</button>
   </div>
 </dialog>
 
-<div id="toast" class="toast" hidden></div>
+<div id="toast" class="toast" hidden><span id="toastText"></span><button id="toastAction" class="toast__action" type="button" hidden></button></div>
 
 <script src="/static/app.js"></script>
 </body>

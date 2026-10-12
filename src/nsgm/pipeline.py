@@ -4,18 +4,15 @@ A torrent client drops a folder or an archive somewhere and stops caring.
 This picks up from there: unpack what is packed, work out what is
 runnable, and say plainly which items still need a person.
 
-The chain is deliberately not fully automatic at one point. Unpacking an
-archive is deterministic and reversible, so it happens on request without
-ceremony. Running an installer is neither: silent-install switches differ
-between makers, an installer can do anything it likes to a machine, and a
-download that turned out to be wrong becomes an installed mistake with no
-step in between where anybody looked. Those are prepared and handed over
-with a button, not run unattended.
+Installing what arrives is ``autoinstall``'s job. By default it waits
+for a person to press Install, because an installer can do anything it
+likes to a machine; installing unattended is an opt-in setting.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -23,7 +20,7 @@ import zipfile
 from pathlib import Path
 
 from .scanners import JUNK_DIR, pick_executable, prettify
-from . import proc
+from . import installers, proc, tools
 
 ARCHIVES = {".zip", ".7z", ".rar", ".tar", ".gz", ".bz2", ".xz", ".tgz", ".zst"}
 DISC_IMAGES = {".iso", ".img", ".bin", ".cue", ".chd", ".mdf", ".nrg"}
@@ -32,6 +29,10 @@ INSTALLER_HINTS = ("setup", "install", "installer")
 
 class PipelineError(RuntimeError):
     pass
+
+
+class NeedsSevenZip(PipelineError):
+    """Raised when an archive needs 7-Zip and none is available."""
 
 
 def _size_of(path: Path) -> int:
@@ -81,6 +82,10 @@ def classify(path: Path) -> str:
         ):
             return "installer"
         return "ready"
+    # A folder holding only "setup.exe" and its data used to read as
+    # unclear, because the game-executable picker skips setup programs.
+    if installers.find_installer(path):
+        return "installer"
     if has_archive:
         return "archive"
     return "unknown"
@@ -91,33 +96,128 @@ def classify(path: Path) -> str:
 # --------------------------------------------------------------------------
 
 def _external_unpacker() -> str:
-    for tool in ("7z", "7za", "7zz", "bsdtar"):
-        if shutil.which(tool):
-            return tool
-    return ""
+    return tools.seven_zip() or tools.bsdtar()
 
 
-def _safe_extract_zip(archive: Path, target: Path) -> None:
+def _inside(target: Path, name: str) -> bool:
+    destination = (target / name).resolve()
+    root = target.resolve()
+    return destination == root or root in destination.parents
+
+
+class Stopped(PipelineError):
+    """Raised when unpacking is stopped part way through."""
+
+
+def _check(stop) -> None:
+    if stop is not None and stop():
+        raise Stopped("Stopped.")
+
+
+def _safe_extract_zip(archive: Path, target: Path, progress=None, stop=None) -> None:
     with zipfile.ZipFile(archive) as bundle:
-        for member in bundle.infolist():
+        members = bundle.infolist()
+        for member in members:
             # A crafted archive can name ../../ paths; refuse to write outside.
-            destination = (target / member.filename).resolve()
-            if not str(destination).startswith(str(target.resolve())):
+            if not _inside(target, member.filename):
                 raise PipelineError(f"{archive.name} tries to write outside its folder.")
-        bundle.extractall(target)
+        total = sum(m.file_size for m in members) or 1
+        done = 0
+        for member in members:
+            _check(stop)
+            bundle.extract(member, target)
+            done += member.file_size
+            if progress:
+                progress(done / total, member.filename)
 
 
-def _safe_extract_tar(archive: Path, target: Path) -> None:
+def _safe_extract_tar(archive: Path, target: Path, progress=None, stop=None) -> None:
     with tarfile.open(archive) as bundle:
-        for member in bundle.getmembers():
-            destination = (target / member.name).resolve()
-            if not str(destination).startswith(str(target.resolve())):
+        members = bundle.getmembers()
+        for member in members:
+            if not _inside(target, member.name):
                 raise PipelineError(f"{archive.name} tries to write outside its folder.")
-        bundle.extractall(target)
+            if member.issym() or member.islnk():
+                link = Path(member.name).parent / member.linkname
+                if Path(member.linkname).is_absolute() or not _inside(target, str(link)):
+                    raise PipelineError(f"{archive.name} holds a link pointing outside its folder.")
+        total = sum(m.size for m in members) or 1
+        done = 0
+        for member in members:
+            _check(stop)
+            bundle.extract(member, target)
+            done += member.size
+            if progress:
+                progress(done / total, member.name)
 
 
-def unpack(path: str, into: str = "", keep_archive: bool = True) -> dict:
-    """Extract one archive beside itself. Returns where it landed."""
+PERCENT = re.compile(r"(\d{1,3})%")
+
+
+def _run_external(tool: str, archive: Path, target: Path, progress=None, stop=None) -> None:
+    if Path(tool).name.lower().startswith("7z"):
+        # -bsp1 sends progress to stdout; stdin is closed so a password
+        # prompt for an encrypted archive fails instead of waiting forever.
+        command = [tool, "x", str(archive), f"-o{target}", "-y", "-bsp1", "-bso0"]
+    else:
+        command = [tool, "-xf", str(archive), "-C", str(target)]
+    process = proc.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE)
+    tail = b""
+    while True:
+        if stop is not None and stop():
+            process.kill()
+            process.wait(timeout=30)
+            raise Stopped("Stopped.")
+        chunk = process.stdout.read(256)
+        if not chunk:
+            break
+        tail = (tail + chunk)[-512:]
+        found = PERCENT.findall(chunk.decode("ascii", "replace"))
+        if found and progress:
+            progress(min(int(found[-1]), 100) / 100, "")
+    error = process.stderr.read().decode("utf-8", "replace")
+    if process.wait(timeout=3600) != 0:
+        message = error.strip() or tail.decode("utf-8", "replace").strip()
+        if "password" in message.lower() or "encrypted" in message.lower():
+            raise PipelineError(f"{archive.name} is password protected.")
+        raise PipelineError(f"{Path(tool).name} could not unpack {archive.name}: {message[:200]}")
+
+
+def hoist(target: Path) -> Path:
+    """Lift a lone top folder's contents up a level.
+
+    Archives very often hold one folder holding everything. Installed into
+    a library that would mean "D:\\Games\\Hades\\Hades v1.2\\..."; lifting it
+    gives the folder the name it was meant to have.
+    """
+    try:
+        entries = [c for c in target.iterdir() if not c.name.startswith(".")]
+    except OSError:
+        return target
+    if len(entries) != 1 or not entries[0].is_dir():
+        return target
+    inner = entries[0]
+    temporary = target / (".hoist-" + inner.name)
+    inner.rename(temporary)
+    for child in temporary.iterdir():
+        if (target / child.name).exists():
+            continue
+        child.rename(target / child.name)
+    try:
+        temporary.rmdir()
+    except OSError:
+        pass
+    return target
+
+
+def unpack(path: str, into: str = "", keep_archive: bool = True, progress=None,
+           flatten: bool = False, stop=None) -> dict:
+    """Extract one archive, beside itself or into ``into``. Returns where it landed.
+
+    ``progress(fraction, current_file)`` is called as it goes, where the
+    format allows knowing. ``flatten`` lifts a lone top-level folder.
+    """
     archive = Path(path).expanduser()
     if not archive.is_file():
         raise PipelineError(f"No such file: {archive}")
@@ -127,26 +227,19 @@ def unpack(path: str, into: str = "", keep_archive: bool = True) -> dict:
     suffix = archive.suffix.lower()
 
     try:
-        if suffix == ".zip":
-            _safe_extract_zip(archive, target)
-        elif suffix in (".tar", ".gz", ".tgz", ".bz2", ".xz") and tarfile.is_tarfile(archive):
-            _safe_extract_tar(archive, target)
+        if suffix == ".zip" and zipfile.is_zipfile(archive):
+            _safe_extract_zip(archive, target, progress, stop)
+        elif suffix in (".tar", ".gz", ".tgz", ".bz2", ".xz", ".tbz2", ".txz") \
+                and tarfile.is_tarfile(archive):
+            _safe_extract_tar(archive, target, progress, stop)
         else:
             tool = _external_unpacker()
             if not tool:
-                raise PipelineError(
-                    f"{suffix} archives need 7-Zip installed. Everything else "
-                    "unpacks without it."
+                raise NeedsSevenZip(
+                    f"{archive.name} needs 7-Zip to unpack. Zip and tar archives "
+                    "unpack without it."
                 )
-            command = ([tool, "x", str(archive), f"-o{target}", "-y"]
-                       if tool.startswith("7z")
-                       else [tool, "-xf", str(archive), "-C", str(target)])
-            result = proc.run(command, capture_output=True, text=True, timeout=1800)
-            if result.returncode != 0:
-                raise PipelineError(
-                    f"{tool} could not unpack {archive.name}: "
-                    f"{(result.stderr or '').strip()[:200]}"
-                )
+            _run_external(tool, archive, target, progress, stop)
     except (zipfile.BadZipFile, tarfile.TarError) as exc:
         raise PipelineError(f"{archive.name} is damaged ({exc}).") from exc
     except subprocess.SubprocessError as exc:
@@ -158,10 +251,13 @@ def unpack(path: str, into: str = "", keep_archive: bool = True) -> dict:
         except OSError:
             pass
 
-    # Archives often hold a single folder; use it rather than nesting.
-    entries = [c for c in target.iterdir() if not c.name.startswith(".")]
-    if len(entries) == 1 and entries[0].is_dir():
-        target = entries[0]
+    if flatten:
+        hoist(target)
+    else:
+        # Archives often hold a single folder; use it rather than nesting.
+        entries = [c for c in target.iterdir() if not c.name.startswith(".")]
+        if len(entries) == 1 and entries[0].is_dir():
+            target = entries[0]
 
     found = pick_executable(target)
     return {
@@ -174,6 +270,17 @@ def unpack(path: str, into: str = "", keep_archive: bool = True) -> dict:
 # --------------------------------------------------------------------------
 # looking at what has arrived
 # --------------------------------------------------------------------------
+
+def _display_stem(path: Path) -> str:
+    """A file's name without its extension, or a folder's whole name."""
+    if path.is_dir():
+        return path.name
+    name = path.name
+    for suffix in (".tar.gz", ".tar.xz", ".tar.bz2"):
+        if name.lower().endswith(suffix):
+            return name[: -len(suffix)]
+    return path.stem
+
 
 def survey(folder: str, ignore: list | None = None) -> list[dict]:
     """Everything sitting in a completed-downloads folder, and its state."""
@@ -197,7 +304,7 @@ def survey(folder: str, ignore: list | None = None) -> list[dict]:
         items.append(
             {
                 "path": str(child),
-                "name": prettify(child.name),
+                "name": prettify(_display_stem(child)),
                 "state": state,
                 "size": _size_of(child),
                 "executable": str(found) if found else "",
@@ -287,48 +394,18 @@ def finished_since(previous: dict, current: dict) -> list[str]:
 
 
 # --------------------------------------------------------------------------
-# handing an installer over, then noticing what it left behind
+# what an installer left behind
 # --------------------------------------------------------------------------
 
 def installer_in(path: str) -> str:
-    """The setup program inside a downloaded item, if there is one."""
-    target = Path(path).expanduser()
-    if target.is_file() and target.suffix.lower() in (".exe", ".msi"):
-        return str(target)
-    if not target.is_dir():
-        return ""
-    best = ""
-    for child in sorted(target.rglob("*")):
-        if child.suffix.lower() not in (".exe", ".msi"):
-            continue
-        name = child.stem.lower()
-        if any(hint in name for hint in INSTALLER_HINTS):
-            return str(child)
-        best = best or str(child)
-    return best
+    """The setup program a downloaded item holds, or "" if it holds none.
 
-
-def launch(path: str) -> dict:
-    """Start an installer and let the person drive it.
-
-    Deliberately not silent and not unattended: where it installs, onto
-    which disk, and whether it should be installed at all are decisions
-    worth keeping.
+    Only real installers count. Any executable used to qualify, so a
+    finished download that was already a playable game was announced as
+    an installer waiting to be run.
     """
-    target = Path(path).expanduser()
-    if not target.exists():
-        raise PipelineError(f"No such file: {target}")
-
-    try:
-        if os.name == "nt":
-            os.startfile(str(target))  # noqa: S606 - hands it to the shell
-        elif shutil.which("xdg-open"):
-            proc.Popen(["xdg-open", str(target)])
-        else:
-            proc.Popen([str(target)])
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise PipelineError(f"Could not start {target.name}: {exc}") from exc
-    return {"started": str(target)}
+    info = installers.inspect(path)
+    return info["source"] if info["kind"] == "installer" else ""
 
 
 def installed_snapshot() -> dict:

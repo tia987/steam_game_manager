@@ -176,6 +176,55 @@ def steam_is_running() -> bool:
         return False
 
 
+def _open_uri(uri: str) -> None:
+    system = platform.system()
+    if system == "Windows":
+        os.startfile(uri)  # noqa: S606 - Steam registers itself for steam://
+    elif system == "Darwin":
+        proc.Popen(["open", uri])
+    else:
+        proc.Popen(["xdg-open", uri])
+
+
+def close_steam(timeout: int = 40) -> dict:
+    """Ask Steam to exit, the way its own menu does, and wait for it.
+
+    Steam has to be closed before shortcuts are written, and sending
+    someone off to find the tray icon was the one step the app could not
+    do for them. ``-shutdown`` asks the running client to quit cleanly, so
+    it saves its own state first.
+    """
+    if not steam_is_running():
+        return {"ok": True, "message": "Steam is already closed."}
+    system = platform.system()
+    root = find_steam_root()
+    try:
+        if system == "Windows" and root and (root / "steam.exe").exists():
+            proc.Popen([str(root / "steam.exe"), "-shutdown"])
+        elif system == "Linux" and shutil.which("steam"):
+            proc.Popen(["steam", "-shutdown"])
+        else:
+            _open_uri("steam://exit")
+    except OSError as exc:
+        return {"ok": False, "message": f"Could not ask Steam to close ({exc})."}
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(1)
+        if not steam_is_running():
+            return {"ok": True, "message": "Steam is closed."}
+    return {"ok": False, "message": "Steam is still closing. Give it a moment, or close it "
+                                    "from its tray icon."}
+
+
+def open_steam() -> dict:
+    """Start Steam on the library page, where newly added games appear."""
+    try:
+        _open_uri("steam://open/games")
+    except OSError as exc:
+        return {"ok": False, "message": f"Could not start Steam ({exc})."}
+    return {"ok": True, "message": "Starting Steam."}
+
+
 # --------------------------------------------------------------------------
 # accounts
 # --------------------------------------------------------------------------

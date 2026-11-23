@@ -211,6 +211,17 @@ twenty thousand. Items the Archive does not seed are counted and left
 out. **Files** beside an item lists that item's own files, read from its
 file list, with the magnet derived from its `_archive.torrent`.
 
+**Blogs and directories.** Many sites list games as blog posts,
+WordPress being the most common: every post at the top of the site, next
+to About and Contact, so the shape of an address says nothing. Post
+titles carry a marker blog software adds (`rel="bookmark"`), and when a
+page has several, *Treat as a catalogue* takes those posts and nothing
+else, following the older-posts pages. A post that only describes a game
+and links to its official site or forge has no files of its own;
+opening it follows that link once, skipping social and share links, and
+lists what the project itself offers. The note above the results says
+when that happened.
+
 **Files that come in pieces.** An installer split into volumes
 (`setup.exe` with `setup-1.bin`, `setup-2.bin`) and a CD image (`game.cue`
 with `game.bin` or `game (Track 01).bin`) are shown as one entry, marked

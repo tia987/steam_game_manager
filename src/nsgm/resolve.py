@@ -775,7 +775,10 @@ def _entry_links(parser: "_Collector", final_url: str, origin: str) -> list[dict
             continue                       # a page of this same listing
 
         if absolute not in seen:
-            seen[absolute] = {"name": text, "url": absolute, "shape": _shape(absolute)}
+            seen[absolute] = {"name": text, "url": absolute, "shape": _shape(absolute),
+                              # rel="bookmark" marks a post's own title link
+                              # on WordPress and most other blog software.
+                              "bookmark": "bookmark" in entry["hint"].lower().split()}
     return list(seen.values())
 
 
@@ -853,10 +856,17 @@ def crawl_index(url: str, timeout: int = 20, max_pages: int = 25,
                 pass
 
             found = _entry_links(parser, page_final, origin)
-            if not shapes:
+            # A blog keeps every post at the top level - /0-a-d/ beside
+            # /about/ - so URL shapes cannot tell posts from the menu. Its
+            # post titles say what they are, and then only they count.
+            posts = [item for item in found if item["bookmark"]]
+            blog = len(posts) >= 3
+            if blog:
+                found = posts
+            elif not shapes:
                 shapes = _dominant_shapes(found)
             for item in found:
-                if shapes and item["shape"] not in shapes:
+                if not blog and shapes and item["shape"] not in shapes:
                     continue
                 appearances[item["url"]] = appearances.get(item["url"], 0) + 1
                 if item["url"] not in programs:
@@ -1334,8 +1344,55 @@ def group_parts(candidates: list[dict]) -> list[dict]:
     return kept
 
 
+# Where a page sends people for the real thing, strongest first.
+PROJECT_FORGES = re.compile(r"(?i)^(www\.)?(github\.com|gitlab\.com|codeberg\.org|sourceforge\.net|"
+                         r"[a-z0-9-]+\.itch\.io)$")
+PROJECT_WORDS = re.compile(r"(?i)\b(download|downloads|get it|official|project|website|"
+                           r"home ?page|releases?|source code)\b")
+NOT_A_PROJECT = re.compile(r"(?i)(^|\.)(facebook|twitter|x|instagram|youtube|youtu|discord|"
+                           r"reddit|tiktok|patreon|ko-fi|paypal|wordpress|gravatar|gmpg|"
+                           r"wikipedia|google|bing|amazon|t)\.(com|org|net|be|gg|co)$")
+
+
+def project_link(url: str, timeout: int) -> str:
+    """The project a page points to, for a page with nothing to download.
+
+    A directory or blog post describes a program and links to where it
+    really lives: a forge, or its official site. That link, not the post,
+    is where the files are.
+    """
+    fetched = _fetch_page(url, timeout)
+    if fetched is None:
+        return ""
+    _page_url, blob, final = fetched
+    parser = _Collector()
+    try:
+        parser.feed(_decode(blob))
+    except Exception:
+        return ""
+    here = urllib.parse.urlparse(final).netloc.lower()
+    best = (0, "")
+    for entry in parser.links:
+        absolute = urllib.parse.urljoin(final, entry["href"].strip()).split("#", 1)[0]
+        parsed = urllib.parse.urlparse(absolute)
+        host = parsed.netloc.lower()
+        if parsed.scheme not in ("http", "https") or not host or host == here:
+            continue
+        if NOT_A_PROJECT.search(host):
+            continue
+        text = re.sub(r"\s+", " ", entry["text"]).strip()
+        score = 0
+        if PROJECT_FORGES.match(host):
+            score = 3
+        elif PROJECT_WORDS.search(text) or PROJECT_WORDS.search(entry["hint"]):
+            score = 2
+        if score > best[0]:
+            best = (score, absolute)
+    return best[1]
+
+
 def _resolve_uncached(url: str, system: str, token: str, timeout: int,
-                      limit: int, tag: str, pages: int, progress=None) -> dict:
+                      limit: int, tag: str, pages: int, progress=None, hop: int = 0) -> dict:
     # archive.org publishes proper APIs; reading its HTML would be a
     # worse answer to a question it already answers directly.
     result = None
@@ -1362,6 +1419,20 @@ def _resolve_uncached(url: str, system: str, token: str, timeout: int,
         result = _sourceforge(url, system, timeout)
     if result is None:
         result = _from_html(url, system, timeout, pages, progress=progress)
+        if not result["candidates"] and not hop:
+            # Nothing to download here: a post or directory entry that only
+            # describes a program. Its link to the project is followed, once.
+            target = project_link(url, timeout)
+            if target:
+                followed = _resolve_uncached(target, system, token, timeout, limit, tag, 1,
+                                             progress=progress, hop=1)
+                if followed["candidates"] or followed.get("entry_count"):
+                    host = urllib.parse.urlparse(target).netloc
+                    followed["note"] = " ".join(n for n in (
+                        f"This page has no downloads of its own, so its link to {host} was followed.",
+                        followed.get("note", "")) if n)
+                    followed["via"] = url
+                    return followed
 
     result["candidates"] = group_parts(result["candidates"])
     page_host = urllib.parse.urlparse(result["page"]).netloc.lower()

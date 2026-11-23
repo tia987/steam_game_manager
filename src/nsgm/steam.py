@@ -216,6 +216,25 @@ def close_steam(timeout: int = 40) -> dict:
                                     "from its tray icon."}
 
 
+open_uri = _open_uri
+
+
+def open_big_picture() -> dict:
+    """Start Steam straight into Big Picture, where a controller user left it."""
+    system = platform.system()
+    root = find_steam_root()
+    try:
+        if system == "Windows" and root and (root / "steam.exe").exists():
+            proc.Popen([str(root / "steam.exe"), "-gamepadui"])
+        elif system == "Linux" and shutil.which("steam"):
+            proc.Popen(["steam", "-gamepadui"])
+        else:
+            _open_uri("steam://open/bigpicture")
+    except OSError as exc:
+        return {"ok": False, "message": f"Could not start Steam ({exc})."}
+    return {"ok": True, "message": "Starting Steam in Big Picture."}
+
+
 def open_steam() -> dict:
     """Start Steam on the library page, where newly added games appear."""
     try:

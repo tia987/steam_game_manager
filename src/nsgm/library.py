@@ -61,6 +61,12 @@ DEFAULT_SETTINGS: dict = {
     "torrent_client": {"kind": "system", "url": "", "username": "", "password": ""},
     "torrents": [],          # [{"hash", "name", "added"}] handed to the client by this app
     "account": "",
+    # the store ------------------------------------------------------------------
+    "store_catalogues": [],      # [{"id", "source", "name", "enabled"}], added by the user
+    "store_restart": "exit",     # exit: offer a Steam restart on leaving; now: as soon as idle
+    "store_reopen": "bigpicture",    # what Steam opens into after that restart
+    "store_keep_downloads": False,
+    "store_download_folder": "",
 }
 
 

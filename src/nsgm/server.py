@@ -19,8 +19,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from . import (autoinstall, catalog, download, embed, feeds, installers, library, pipeline,
-               placement, resolve, roms, scanners, sgdb, steam, tools, torrentclient, torrents,
-               uninstall, updater, winproc)
+               placement, resolve, roms, scanners, sgdb, steam, store, tools, torrentclient,
+               torrents, uninstall, updater, winproc)
 
 def _web_dir() -> Path:
     """Where index.html lives, running from source or from a built binary.
@@ -607,8 +607,8 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def send_index(self) -> None:
-        page = (WEB_DIR / "index.html").read_text("utf-8")
+    def send_index(self, name: str = "index.html") -> None:
+        page = (WEB_DIR / name).read_text("utf-8")
         page = page.replace("</head>", f'<meta name="nsgm-token" content="{TOKEN}">\n</head>', 1)
         blob = page.encode("utf-8")
         self.send_response(200)
@@ -642,6 +642,8 @@ class Handler(BaseHTTPRequestHandler):
             return None
         if path in ("/", "/index.html"):
             return self.send_index()
+        if path in ("/store", "/store.html"):
+            return self.send_index("store.html")
         if path.startswith("/static/"):
             name = unquote(path[len("/static/"):])
             candidate = (WEB_DIR / name).resolve()
@@ -739,6 +741,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/presets":
             return json_response(self, {"presets": roms.PRESETS})
 
+        if path == "/api/store":
+            return json_response(self, store.overview(force=(query.get("refresh") or [""])[0] == "1"))
+
+        if path == "/api/store/status":
+            return json_response(self, store.status())
+
         return json_response(self, {"error": "Not found"}, 404)
 
     def do_POST(self):
@@ -763,6 +771,9 @@ class Handler(BaseHTTPRequestHandler):
                     os._exit(0)
                 threading.Thread(target=stop, daemon=True).start()
                 return json_response(self, {"stopping": True})
+
+            if path.startswith("/api/store/"):
+                return self.store_post(path, payload)
 
             if path == "/api/settings":
                 incoming = dict(payload.get("settings") or {})
@@ -1205,13 +1216,49 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/parser/blank":
                 return json_response(self, {"parser": roms.new_parser()})
 
-        except ValueError as exc:
+        except (ValueError, store.StoreError) as exc:
             return json_response(self, {"error": str(exc)}, 400)
+        except catalog.RateLimit as exc:
+            return json_response(self, {"error": str(exc), "rate_limited": True}, 429)
         except sgdb.SGDBError as exc:
             return json_response(self, {"error": str(exc)}, 502)
         except Exception as exc:
             return json_response(self, {"error": f"{type(exc).__name__}: {exc}"}, 500)
 
+        return json_response(self, {"error": "Not found"}, 404)
+
+    def store_post(self, path: str, payload: dict):
+        """The store's actions. Errors are raised and answered by do_POST."""
+        gid = str(payload.get("id", ""))
+        if path == "/api/store/install":
+            return json_response(self, {"job": store.install(gid).to_json()})
+        if path == "/api/store/cancel":
+            store.cancel(gid)
+            return json_response(self, store.status())
+        if path == "/api/store/retry":
+            return json_response(self, {"job": store.retry(gid).to_json()})
+        if path == "/api/store/play":
+            return json_response(self, store.play(gid))
+        if path == "/api/store/covers":
+            ids = [str(i) for i in payload.get("ids") or []][:200]
+            return json_response(self, store.covers(ids))
+        if path == "/api/store/art":
+            return json_response(self, store.detail_art(gid))
+        if path == "/api/store/settings":
+            return json_response(self, {"settings": store.save_store_settings(payload)})
+        if path == "/api/store/catalogues/test":
+            return json_response(self, store.test_source(str(payload.get("source", ""))))
+        if path == "/api/store/refresh":
+            return json_response(self, store.overview(force=True))
+        if path == "/api/store/library":
+            store.set_library(str(payload.get("path", "")))
+            return json_response(self, store.overview())
+        if path == "/api/store/steam":
+            if payload.get("when_idle"):
+                return json_response(self, store.restart_when_idle(bool(payload.get("relaunch"))))
+            return json_response(self, store.refresh_steam(bool(payload.get("relaunch"))))
+        if path == "/api/store/add-self":
+            return json_response(self, store.add_store_to_steam())
         return json_response(self, {"error": "Not found"}, 404)
 
     # -- state ------------------------------------------------------------
@@ -1294,13 +1341,13 @@ def add_torrent(url: str, name: str = "") -> tuple[dict, int]:
             "message": f"Downloading with {client.label}{where}."}, 200
 
 
-def serve(port: int = 8731, open_browser: bool = True) -> None:
+def serve(port: int = 8731, open_browser: bool = True, url: str = "") -> None:
     autoinstall.QUEUE.on_staged = stage_games
     autoinstall.QUEUE.load()
     autoinstall.QUEUE.start()
     autoinstall.WATCHER.start()
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    url = f"http://127.0.0.1:{port}/"
+    url = url or f"http://127.0.0.1:{port}/"
     print(f"  Game manager ready at {url}")
     print("  Leave this window open. Press Ctrl+C to stop.\n")
     if open_browser:

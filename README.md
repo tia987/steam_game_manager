@@ -18,6 +18,8 @@ see what is going cheap or free right now without leaving the app.
 - No dependencies at all beyond Python 3.9 itself
 - Backs up `shortcuts.vdf` before every write, keeping the last twelve
 - Remembers what it added, so you can take it all back out later
+- Has a full-screen store for a controller and a Moonlight stream:
+  pick a game, press Install, and it ends up in Steam
 
 ## Getting it as one file
 
@@ -497,6 +499,128 @@ The **Already added** tab lists what this tool created and nothing else,
 so your hand-made shortcuts are never touched. Select any and remove
 them; their artwork goes too.
 
+## The store
+
+A full-screen front end for the couch, built for a controller and for
+streaming the PC to a television with Moonlight. Browse covers, search,
+press **Install**, and the game is downloaded, installed into your
+library folder and added to Steam, artwork included, without touching a
+mouse.
+
+### Opening it
+
+- **From Steam.** Settings → *Add to Steam* puts a **Game Store** tile in
+  your library, with its own artwork, so it opens from Big Picture like
+  any game.
+- **From Sunshine.** Add an application whose command is
+  `nonsteam-game-manager --store` (or `python -m nsgm --store` from the
+  `src` folder), and pick it in Moonlight.
+- **From the command line.** `python -m nsgm --store` opens it full
+  screen; add `--windowed` for a normal window.
+- **From the main app.** The **Store** button in the header.
+
+### Controls
+
+| Button | Does |
+| --- | --- |
+| D-pad, left stick | move |
+| A | open, press |
+| B | back; on Discover, leave the store |
+| X | search, with an on-screen keyboard |
+| Y | Downloads |
+| LB / RB | previous / next tab |
+| Menu (☰) | Settings |
+| View (⧉) | leave the store |
+| Right stick | scroll |
+
+Moonlight's virtual controller, an Xbox or PlayStation pad, and Steam
+Input all work. If Steam Input maps the controller to keys instead,
+arrows, Enter and Escape do the same jobs, and a mouse or keyboard works
+throughout.
+
+### Getting games into Steam while Steam is open
+
+Steam reads `shortcuts.vdf` only when it starts and overwrites it when it
+quits, so a shortcut written while it runs is lost. While you are
+streaming, Steam is running. The store therefore keeps finished games in
+a waiting list, shown at the top right, and restarts Steam to add them.
+When that happens is a setting:
+
+| Setting | What happens |
+| --- | --- |
+| **When I leave the store** (default) | Leaving asks whether to restart Steam now. Say no and the games are added the next time Steam is closed. |
+| **As soon as installs finish** | Once nothing is downloading or installing, Steam restarts by itself and the store comes back afterwards. |
+
+The restart is done by a small helper process that outlives both the
+store and Steam: it asks Steam to quit cleanly, writes the waiting
+shortcuts, and starts Steam again in Big Picture (or the normal window,
+also a setting). Its log is `store-refresh.log` in the settings folder.
+If Steam is closed when a game finishes, it is added straight away and
+none of this is needed.
+
+### Installing
+
+The first install asks which drive games go on and makes a `Games`
+folder there; after that the library folders from the **Installs** tab
+are used, with the same SSD and free-space rules. Installers run quietly
+where their maker is known. Anything else shows its own screens inside
+the store, which works with the mouse over Moonlight. Downloads go to
+`Downloads/Game Store downloads` and are deleted once installed, unless
+*Keep downloaded files* is on. An interrupted download carries on where
+it stopped.
+
+### Catalogues
+
+The open-source catalogue is always there. Add your own under Settings →
+Catalogues: paste a web address or a file path and press **Check**. The
+file is read and you see its name, its size and a few of its games
+before anything is saved. Catalogues on the web are re-read every six
+hours, or when you press *Refresh all catalogues*. A `github.com/…/blob/…`
+page address is turned into the raw file automatically.
+
+A catalogue is a JSON file:
+
+```json
+{
+  "name": "My catalogue",
+  "games": [
+    {
+      "name": "SuperTuxKart",
+      "repo": "supertuxkart/stk-code",
+      "tags": ["Racing"],
+      "blurb": "Kart racing with power-ups."
+    },
+    {
+      "name": "Some Game",
+      "downloads": {
+        "windows": "https://example.org/some-game-win64.zip",
+        "linux": "https://example.org/some-game.AppImage"
+      },
+      "cover": "https://example.org/cover-600x900.png",
+      "size": 1500000000
+    }
+  ]
+}
+```
+
+A bare list of games works too. Per game:
+
+| Field | Meaning |
+| --- | --- |
+| `name` | required |
+| `repo` | a GitHub `owner/name`: the latest release, with the file chosen for this computer as the Open source tab does |
+| `asset` | with `repo`, a regular expression the file name must match, for projects that publish several builds |
+| `downloads` | direct links keyed `windows`, `linux` or `mac`, or `any` |
+| `download` | one direct link for every system |
+| `tags`, `blurb`, `licence`, `site` | shown on the game's page; tags become filter chips |
+| `note`, `needs_data` | a warning shown in amber before installing |
+| `cover`, `hero`, `logo`, `wide` | artwork for the store and for Steam; without them SteamGridDB is asked, if you have a key |
+| `size` | bytes, used to pick a library folder before the download finishes |
+
+An entry needs at least a `repo`, a download or a `site`. Entries with
+none of those, or that repeat a name, are skipped and counted when you
+press Check.
+
 ## Open source games
 
 The **Open source** tab is a catalogue of games that are genuinely free
@@ -604,6 +728,7 @@ offered in the same step so the entry and its artwork go together.
 | --- | --- |
 | Settings and the record of what was added | `%APPDATA%\NonSteamGameManager` on Windows, `~/.config/nonsteam-game-manager` elsewhere |
 | Install queue and history | `installs.json` in the same folder |
+| Store: what it installed, games waiting for Steam | `store.json`, with `store-catalogues.json` and `store-art.json` as caches |
 | Steam store look-ups (sizes, SSD needs) | `storeinfo.json`, kept 30 days |
 | A fetched 7-Zip | `tools\7zip` in the same folder |
 | Shortcuts | `<Steam>/userdata/<account>/config/shortcuts.vdf` |

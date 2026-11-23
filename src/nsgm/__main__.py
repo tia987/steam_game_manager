@@ -7,7 +7,7 @@ import os
 import socket
 import sys
 
-from . import __version__, desktop, embed, library, server, steam, winproc
+from . import __version__, desktop, embed, library, server, steam, store, winproc
 
 
 def free_port(preferred: int) -> int:
@@ -28,11 +28,23 @@ def main() -> int:
                         help="do not open anything; just serve")
     parser.add_argument("--browser", action="store_true",
                         help="use your web browser instead of an app window")
+    parser.add_argument("--store", action="store_true",
+                        help="open straight into the full-screen store, for a controller")
+    parser.add_argument("--windowed", action="store_true",
+                        help="with --store, use a normal window instead of full screen")
     parser.add_argument("--version", action="version", version=f"nsgm {__version__}")
+    # Run by the store as a separate process: close Steam, write the
+    # shortcuts that were waiting, start Steam again.
+    parser.add_argument("--steam-refresh", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--relaunch-store", action="store_true", help=argparse.SUPPRESS)
     # Passed by the elevated copy to itself, so declining or failing the
     # prompt can never turn into a loop of relaunches.
     parser.add_argument("--no-elevate", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    if args.steam_refresh:
+        # No window, no server: this outlives the store and Steam both.
+        return store.run_refresh(relaunch=args.relaunch_store)
 
     # Installers that ask for administrator rights can only be held inside
     # the app's window when the app has them too. With the setting on, the
@@ -65,6 +77,9 @@ def main() -> int:
 
     port = free_port(args.port)
     url = f"http://127.0.0.1:{port}/"
+    if args.store:
+        url += "store"
+        store.STORE_WINDOW = not args.browser and not args.no_browser
 
     if args.no_browser:
         server.serve(port, open_browser=False)
@@ -78,9 +93,11 @@ def main() -> int:
         server.STATE["windowed"] = True
         embed.ENABLED = True
         desktop.run(url, lambda: server.serve(port, open_browser=False), True,
-                    on_closing=embed.MANAGER.release_all)
+                    on_closing=embed.MANAGER.release_all,
+                    fullscreen=args.store and not args.windowed,
+                    title=desktop.STORE_TITLE if args.store else desktop.TITLE)
     else:
-        server.serve(port, open_browser=True)
+        server.serve(port, open_browser=True, url=url)
     return 0
 
 

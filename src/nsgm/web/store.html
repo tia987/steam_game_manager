@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Game Store</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@10..48,500;10..48,700;10..48,800&family=Inter+Tight:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/store.css">
+</head>
+<body data-input="pad">
+
+<div class="app" id="app">
+  <header class="top">
+    <div class="brand">
+      <span class="brand__mark" aria-hidden="true"></span>
+      <span class="brand__name">Game Store</span>
+    </div>
+
+    <nav class="tabs" aria-label="Sections">
+      <span class="glyph glyph--bumper" aria-hidden="true">LB</span>
+      <button class="tab nav" type="button" data-tab="discover">Discover</button>
+      <button class="tab nav" type="button" data-tab="library">Library</button>
+      <button class="tab nav" type="button" data-tab="downloads">Downloads<span class="tab__count" id="downloadCount" hidden></span></button>
+      <button class="tab nav" type="button" data-tab="settings">Settings</button>
+      <span class="glyph glyph--bumper" aria-hidden="true">RB</span>
+    </nav>
+
+    <div class="top__right">
+      <button class="pending nav" id="pendingChip" type="button" hidden></button>
+      <span class="clock" id="clock"></span>
+    </div>
+  </header>
+
+  <main class="views">
+    <!-- discover ------------------------------------------------------------ -->
+    <section class="view" id="view-discover">
+      <div class="toolbar">
+        <button class="search nav" id="searchBox" type="button">
+          <span class="search__icon" aria-hidden="true"></span>
+          <span class="search__text" id="searchText">Search games</span>
+          <span class="glyph glyph--x" aria-hidden="true">X</span>
+        </button>
+        <div class="chips" id="chips" role="toolbar" aria-label="Filter"></div>
+      </div>
+      <div class="notices" id="notices"></div>
+      <div class="grid" id="grid"></div>
+      <p class="empty" id="gridEmpty" hidden>Nothing matches that search.</p>
+    </section>
+
+    <!-- library ------------------------------------------------------------- -->
+    <section class="view" id="view-library" hidden>
+      <div class="banner" id="libraryBanner" hidden>
+        <p id="libraryBannerText"></p>
+        <button class="btn btn--primary nav" id="libraryRestart" type="button">Restart Steam now</button>
+      </div>
+      <div class="rows" id="libraryRows"></div>
+      <p class="empty" id="libraryEmpty" hidden>Games you install from the store show up here.</p>
+    </section>
+
+    <!-- downloads ----------------------------------------------------------- -->
+    <section class="view" id="view-downloads" hidden>
+      <div class="rows" id="downloadRows"></div>
+      <p class="empty" id="downloadEmpty" hidden>Nothing is downloading. Pick a game in Discover and press Install.</p>
+    </section>
+
+    <!-- settings ------------------------------------------------------------ -->
+    <section class="view view--narrow" id="view-settings" hidden>
+      <div class="group">
+        <h2 class="group__title">Steam</h2>
+        <p class="group__lede">Steam only notices new games when it starts, and it is open while you stream.
+          New games wait until Steam restarts.</p>
+
+        <p class="label">Restart Steam</p>
+        <div class="segmented" id="optRestart">
+          <button class="seg nav" type="button" data-value="exit">When I leave the store</button>
+          <button class="seg nav" type="button" data-value="now">As soon as installs finish</button>
+        </div>
+
+        <p class="label">After restarting, open</p>
+        <div class="segmented" id="optReopen">
+          <button class="seg nav" type="button" data-value="bigpicture">Big Picture</button>
+          <button class="seg nav" type="button" data-value="library">The normal Steam window</button>
+        </div>
+
+        <div class="line">
+          <div>
+            <p class="line__title">The store in your Steam library</p>
+            <p class="line__sub" id="selfState">Adds a “Game Store” tile, so it can be opened from Big Picture.</p>
+          </div>
+          <button class="btn nav" id="addSelf" type="button">Add to Steam</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <h2 class="group__title">Installing</h2>
+        <div id="libraryPick"></div>
+        <div class="line">
+          <div>
+            <p class="line__title">Keep downloaded files</p>
+            <p class="line__sub">Off: each download is deleted once its game is installed.</p>
+          </div>
+          <button class="toggle nav" id="optKeep" type="button" role="switch" aria-checked="false"><span></span></button>
+        </div>
+      </div>
+
+      <div class="group">
+        <h2 class="group__title">Catalogues</h2>
+        <p class="group__lede">A catalogue is a list of games in a JSON file, on the web or on this computer.
+          The README describes the format.</p>
+        <div class="rows rows--tight" id="catalogueRows"></div>
+
+        <p class="label">Add a catalogue</p>
+        <div class="adder">
+          <input class="input nav" id="catalogueSource" type="text" spellcheck="false"
+                 placeholder="https://… or a file path" autocomplete="off">
+          <button class="btn nav" id="catalogueCheck" type="button">Check</button>
+        </div>
+        <div class="adder__result" id="catalogueResult" hidden>
+          <p id="catalogueResultText"></p>
+          <button class="btn btn--primary nav" id="catalogueAdd" type="button">Add it</button>
+        </div>
+        <button class="btn btn--quiet nav" id="catalogueRefresh" type="button">Refresh all catalogues</button>
+      </div>
+
+      <div class="group">
+        <button class="btn btn--danger nav" id="leaveButton" type="button">Leave the store</button>
+      </div>
+    </section>
+  </main>
+
+  <footer class="hints" id="hints"></footer>
+</div>
+
+<!-- a game's page -------------------------------------------------------- -->
+<div class="sheet sheet--detail" id="detail" hidden>
+  <div class="detail">
+    <div class="detail__hero" id="detailHero"></div>
+    <div class="detail__body">
+      <div class="detail__cover" id="detailCover"></div>
+      <div class="detail__info">
+        <img class="detail__logo" id="detailLogo" alt="" hidden>
+        <h1 class="detail__title" id="detailTitle"></h1>
+        <p class="detail__meta" id="detailMeta"></p>
+        <p class="detail__blurb" id="detailBlurb"></p>
+        <p class="detail__warn" id="detailWarn" hidden></p>
+        <div class="progress" id="detailProgress" hidden><span></span></div>
+        <p class="detail__status" id="detailStatus"></p>
+        <div class="actions" id="detailActions"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- on-screen keyboard ---------------------------------------------------- -->
+<div class="sheet sheet--keyboard" id="keyboard" hidden>
+  <div class="kb">
+    <div class="kb__head">
+      <span class="kb__label" id="kbLabel">Search</span>
+      <div class="kb__field" id="kbField"><span id="kbValue"></span><span class="kb__caret"></span></div>
+    </div>
+    <div class="kb__keys" id="kbKeys"></div>
+  </div>
+</div>
+
+<!-- questions ------------------------------------------------------------ -->
+<div class="sheet sheet--dialog" id="dialog" hidden>
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialogTitle">
+    <h2 class="dialog__title" id="dialogTitle"></h2>
+    <p class="dialog__text" id="dialogText"></p>
+    <div class="actions actions--column" id="dialogActions"></div>
+  </div>
+</div>
+
+<!-- an installer's own window, held in the app ----------------------------- -->
+<div class="sheet sheet--installer" id="installer" hidden>
+  <div class="installer">
+    <div class="installer__head">
+      <div>
+        <p class="installer__title" id="installerTitle"></p>
+        <p class="installer__sub" id="installerSub"></p>
+      </div>
+      <div class="actions">
+        <button class="btn nav" id="installerPop" type="button">Pop out</button>
+        <button class="btn nav" id="installerHide" type="button">Hide</button>
+      </div>
+    </div>
+    <div class="installer__stage" id="installerStage">
+      <p id="installerNote"></p>
+    </div>
+  </div>
+</div>
+
+<div class="cover-up" id="coverUp" hidden>
+  <span class="brand__mark brand__mark--big" aria-hidden="true"></span>
+  <p id="coverUpText">Restarting Steam…</p>
+</div>
+
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script src="/static/store.js"></script>
+</body>
+</html>

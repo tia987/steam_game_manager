@@ -767,7 +767,9 @@ class Queue:
         return games
 
     def _stage(self, task: Task, games: list[dict], settings: dict) -> None:
-        if not games:
+        if not games or task.origin == "store":
+            # The store names, dresses and adds its own games, and keeps
+            # them for a Steam restart when Steam is open.
             return
         if self.on_staged:
             try:

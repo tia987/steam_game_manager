@@ -19,6 +19,7 @@ import threading
 import webbrowser
 
 TITLE = "Non-Steam Game Manager"
+STORE_TITLE = "Game Store"
 
 
 def available() -> bool:
@@ -44,7 +45,8 @@ def _open_browser(url: str) -> None:
     threading.Timer(0.6, lambda: webbrowser.open(url)).start()
 
 
-def run(url: str, serve, prefer_window: bool = True, on_closing=None) -> None:
+def run(url: str, serve, prefer_window: bool = True, on_closing=None,
+        fullscreen: bool = False, title: str = TITLE) -> None:
     """Start the server, then show the interface.
 
     ``serve`` is called on a background thread. The window has to own the
@@ -67,10 +69,13 @@ def run(url: str, serve, prefer_window: bool = True, on_closing=None) -> None:
 
     try:
         window = webview.create_window(
-            TITLE, url,
+            title, url,
             width=1280, height=860,
             min_size=(900, 600),
             confirm_close=False,
+            # The store is meant for a television and a controller, often
+            # over a Moonlight stream: no frame, nothing to aim a mouse at.
+            fullscreen=fullscreen,
         )
         if on_closing is not None:
             def closing():

@@ -106,7 +106,8 @@ class QBittorrent:
     def version(self) -> str:
         return self._request("/api/v2/app/version").strip()
 
-    def add(self, magnet: str = "", torrent: bytes = b"", save_path: str = "") -> None:
+    def add(self, magnet: str = "", torrent: bytes = b"", save_path: str = "",
+            tag: str = "") -> None:
         boundary = "nsgm" + uuid.uuid4().hex
         parts: list[bytes] = []
 
@@ -123,6 +124,8 @@ class QBittorrent:
         if save_path:
             field("savepath", save_path)
             field("autoTMM", "false")
+        if tag:
+            field("tags", tag)              # older versions ignore it, which is fine
         body = b"".join(parts) + f"--{boundary}--\r\n".encode()
         answer = self._request("/api/v2/torrents/add", body,
                                {"Content-Type": f"multipart/form-data; boundary={boundary}"})
@@ -169,6 +172,27 @@ class QBittorrent:
         self._request("/api/v2/torrents/delete", body,
                       {"Content-Type": "application/x-www-form-urlencoded"})
 
+    def files(self, info_hash: str) -> list[dict]:
+        """The torrent's files, empty until its details have arrived."""
+        query = urllib.parse.urlencode({"hash": info_hash})
+        try:
+            items = json.loads(self._request(f"/api/v2/torrents/files?{query}") or "[]")
+        except ValueError as exc:
+            raise TorrentClientError("qBittorrent sent something unreadable.") from exc
+        return [{"index": int(item.get("index", position)), "name": item.get("name", ""),
+                 "size": int(item.get("size") or 0)}
+                for position, item in enumerate(items)]
+
+    def skip(self, info_hash: str, indexes: list[int]) -> None:
+        """Do not download these files of the torrent."""
+        if not indexes:
+            return
+        body = urllib.parse.urlencode({"hash": info_hash,
+                                       "id": "|".join(str(i) for i in indexes),
+                                       "priority": "0"}).encode()
+        self._request("/api/v2/torrents/filePrio", body,
+                      {"Content-Type": "application/x-www-form-urlencoded"})
+
 
 class Transmission:
     label = "Transmission"
@@ -212,7 +236,8 @@ class Transmission:
     def version(self) -> str:
         return str(self._call("session-get", {"fields": ["version"]}).get("version", ""))
 
-    def add(self, magnet: str = "", torrent: bytes = b"", save_path: str = "") -> None:
+    def add(self, magnet: str = "", torrent: bytes = b"", save_path: str = "",
+            tag: str = "") -> None:
         arguments: dict = {}
         if torrent:
             arguments["metainfo"] = base64.b64encode(torrent).decode()
@@ -220,7 +245,15 @@ class Transmission:
             arguments["filename"] = magnet
         if save_path:
             arguments["download-dir"] = save_path
-        self._call("torrent-add", arguments)
+        if tag:
+            arguments["labels"] = [tag]     # Transmission 3.00 and later; others ignore it
+        try:
+            self._call("torrent-add", arguments)
+        except TorrentClientError:
+            if "labels" not in arguments:
+                raise
+            del arguments["labels"]
+            self._call("torrent-add", arguments)
 
     STATES = {0: "paused", 1: "checking", 2: "checking", 3: "queued", 4: "downloading",
               5: "done", 6: "done"}
@@ -229,7 +262,8 @@ class Transmission:
         if not hashes:
             return []
         fields = ["hashString", "name", "percentDone", "status", "rateDownload", "eta",
-                  "downloadDir", "totalSize", "error", "errorString"]
+                  "downloadDir", "totalSize", "error", "errorString",
+                  "metadataPercentComplete", "peersSendingToUs"]
         found = self._call("torrent-get", {"fields": fields, "ids": hashes})
         out = []
         for item in found.get("torrents") or []:
@@ -237,11 +271,24 @@ class Transmission:
             state = self.STATES.get(int(item.get("status") or 0), "")
             if state == "paused" and done >= 1:
                 state = "done"
+            if state == "downloading":
+                # Transmission has no states of its own for these two; a
+                # magnet waiting for its details and a download nobody is
+                # sending to both just say "downloading".
+                if float(item.get("metadataPercentComplete", 1) or 0) < 1:
+                    state = "fetching details"
+                elif not item.get("peersSendingToUs") and not item.get("rateDownload"):
+                    state = "stalled"
+            # Errors 1 and 2 are a tracker warning and a tracker error. With
+            # a magnet listing twenty trackers some are always down, and the
+            # download carries on through the others; only 3, a local error
+            # such as a full disk, stops it.
+            failed = int(item.get("error") or 0) == 3
             out.append({
                 "hash": str(item.get("hashString", "")).lower(),
                 "name": item.get("name", ""),
                 "progress": done,
-                "state": "error" if item.get("error") else state,
+                "state": "error" if failed else state,
                 "speed": int(item.get("rateDownload") or 0),
                 "eta": int(item.get("eta") or 0),
                 "size": int(item.get("totalSize") or 0),
@@ -250,12 +297,25 @@ class Transmission:
                 # torrent's own file or folder is that plus its name.
                 "content": os.path.join(item.get("downloadDir", ""), item.get("name", ""))
                            if item.get("downloadDir") and item.get("name") else "",
-                "error": item.get("errorString", ""),
+                "error": item.get("errorString", "") if failed else "",
             })
         return out
 
     def remove(self, hashes: list[str], delete_files: bool = False) -> None:
         self._call("torrent-remove", {"ids": hashes, "delete-local-data": bool(delete_files)})
+
+    def files(self, info_hash: str) -> list[dict]:
+        """The torrent's files, empty until its details have arrived."""
+        found = self._call("torrent-get", {"fields": ["files"], "ids": [info_hash]})
+        torrents = found.get("torrents") or []
+        items = torrents[0].get("files") or [] if torrents else []
+        return [{"index": position, "name": item.get("name", ""),
+                 "size": int(item.get("length") or 0)} for position, item in enumerate(items)]
+
+    def skip(self, info_hash: str, indexes: list[int]) -> None:
+        """Do not download these files of the torrent."""
+        if indexes:
+            self._call("torrent-set", {"ids": [info_hash], "files-unwanted": list(indexes)})
 
 
 def from_settings(config: dict | None):

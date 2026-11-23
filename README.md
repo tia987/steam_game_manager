@@ -580,6 +580,21 @@ anything is installed, with the reason shown. Downloads go to
 *Keep downloaded files* is on. An interrupted download carries on where
 it stopped.
 
+### Many downloads at once
+
+Pressing Install on dozens of games is fine:
+
+- **Direct downloads take turns**, two at a time by default (Settings →
+  *Direct downloads at once*, up to 4). The rest show *Waiting its turn*.
+  Thirty downloads from the same file hosts at once only get throttled.
+- **Torrents queue in the torrent app**, under its own limit on active
+  downloads; the store shows *Queued in qBittorrent* and waits.
+- **Disk space is set aside** before each download starts: its download
+  size, plus room to unpack it, counted against what every other running
+  download still has to write, with 2 GB always left free. One that would
+  not fit says so instead of filling the disk half way through.
+- **Unpacking happens one game at a time**, since it is all disk work.
+
 ### Downloading over BitTorrent
 
 A catalogue can give a magnet link or a `.torrent` address instead of a
@@ -605,6 +620,16 @@ whole way so you never open it:
 4. **Tidying up.** The torrent is removed from the client and the
    downloaded files deleted. Turn on *Keep sharing after installing* to
    leave it seeding instead.
+
+Torrents the store adds are tagged *Game Store* in the client, and the
+store remembers them in `store.json`, across restarts. Only those are
+ever removed or have their files deleted. If a torrent was already in
+the client before you pressed Install, the store waits for it and
+installs from it, but never removes it, deletes its files or changes
+which of its files are downloaded. If the torrent app stops answering
+for up to three minutes (restarting, busy) downloads wait for it rather
+than failing. With Transmission, a tracker being down is not treated as
+an error; only a local one such as a full disk is.
 
 ### Uninstalling
 
@@ -720,7 +745,15 @@ Installing one reads the post again, so the links are current, then:
 1. **Picks a route.** Settings → *Games from release websites*: *Best
    available* uses BitTorrent when a torrent app is running and the
    mirrors otherwise, falling back to the other if the first fails;
-   *Direct downloads* and *BitTorrent* use only that one.
+   *Direct downloads* and *BitTorrent* use only that one. Over
+   BitTorrent the release's optional files are unticked in the torrent
+   app, by the same rule as below, and any scraps of them a client wrote
+   anyway are removed before the setup program sees them. With mirrors to
+   fall back on, a torrent whose details nobody shares within 15 minutes,
+   or that makes no progress for 45, is removed with its partial files
+   and the mirrors are used instead. Time spent queued or paused in the
+   torrent app never counts. On *BitTorrent* only, it waits as long as it
+   takes.
 2. **Fetches every file the release needs**, into a folder of its own in
    the store's download folder. Files named `optional` or `bonus` are
    skipped unless *Download optional files* is on; of `selective-<language>`
@@ -736,7 +769,7 @@ Installing one reads the post again, so the links are current, then:
    countdown, keeping the host's cookies. A host that builds its link
    entirely in script cannot be read; that mirror is reported and the
    next one tried.
-4. **Unpacks before installing.** A release packed as an archive usually
+4. **Unpacks before installing**, one game at a time. A release packed as an archive usually
    holds a setup program. It is unpacked first (7-Zip is fetched on
    Windows if needed), loose files such as language packs are put beside
    the setup program, and that folder goes to the install queue.

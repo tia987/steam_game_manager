@@ -818,7 +818,8 @@ function renderSettings() {
   for (const [id, value] of [["optRestart", settings.restart], ["optReopen", settings.reopen],
                              ["optGlyphs", settings.glyphs || "auto"],
                              ["optSiteMethod", settings.site_method || "auto"],
-                             ["optSitePages", String(settings.site_pages || 5)]]) {
+                             ["optSitePages", String(settings.site_pages || 5)],
+                             ["optParallel", String(settings.parallel || 2)]]) {
     for (const seg of $(id).querySelectorAll(".seg")) seg.classList.toggle("is-on", seg.dataset.value === value);
   }
   $("optKeep").setAttribute("aria-checked", settings.keep_downloads ? "true" : "false");
@@ -1724,6 +1725,10 @@ function wire() {
       $("torrentLook").disabled = false;
     }
   });
+  for (const seg of $("optParallel").querySelectorAll(".seg")) {
+    seg.dataset.key = `optParallel:${seg.dataset.value}`;
+    seg.addEventListener("click", () => saveSettings({ parallel: Number(seg.dataset.value) }));
+  }
   for (const seg of $("optSitePages").querySelectorAll(".seg")) {
     seg.dataset.key = `optSitePages:${seg.dataset.value}`;
     seg.addEventListener("click", async () => {

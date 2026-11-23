@@ -316,6 +316,39 @@ class ReleaseSiteTests(unittest.TestCase):
         self.assertEqual(again["path"], result["path"])
         self.assertFalse([h for h in HITS if h.startswith("/files/")])
 
+    def test_best_available_falls_back_to_mirrors_when_nobody_seeds(self):
+        from unittest import mock
+
+        class Silent:
+            label = "FakeTorrent"
+            removed = []
+
+            def status(self, hashes):
+                return [{"hash": hashes[0], "name": "", "progress": 0.0,
+                         "state": "fetching details", "speed": 0, "eta": 0, "size": 0,
+                         "path": "", "content": "", "error": ""}] if self.added else []
+
+            added = False
+
+            def add(self, **kwargs):
+                self.added = True
+
+            def remove(self, hashes, delete_files=False):
+                self.removed.append(delete_files)
+
+        client = Silent()
+        real = store.Patience
+        game = self._game("glacier")
+        folder = Path(tempfile.mkdtemp(dir=TEMP))
+        job = store.StoreJob(id=game["id"], name=game["name"])
+        with mock.patch.object(store, "torrent_client", lambda *a, **k: client), \
+                mock.patch.object(store, "POLL_SECONDS", 0.001), \
+                mock.patch.object(store, "Patience", lambda: real(details=0.01, stalled=1)):
+            result, shared = store._fetch_release(job, game, {"store_site_method": "auto"}, folder)
+        self.assertIsNone(shared)
+        self.assertEqual(client.removed, [True])            # the dead torrent was cleared out
+        self.assertTrue((Path(result["path"]) / "setup.exe").is_file())
+
     def test_loose_files_join_the_setup_program(self):
         target = Path(tempfile.mkdtemp(dir=TEMP)) / "Game"
         target.mkdir()

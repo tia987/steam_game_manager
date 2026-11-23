@@ -51,6 +51,7 @@ and unpacked before it is installed.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -66,10 +67,10 @@ import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePath
 
 from . import (archive, autoinstall, catalog, download, drives, hosters, installers, library,
-               pipeline, proc, scanners, sgdb, sitecatalog, steam, tools, torrentclient,
+               pipeline, placement, proc, scanners, sgdb, sitecatalog, steam, tools, torrentclient,
                torrents, uninstall)
 
 USER_AGENT = "NonSteamGameManager/1.0 (+store)"
@@ -508,6 +509,27 @@ def clean_catalogue_list(items) -> list[dict]:
     return out
 
 
+_CATALOGUE_MEMO: dict = {"stamp": None, "data": {}}
+
+
+def _catalogue_cache() -> dict:
+    """The saved catalogues, read from disk only when the file has changed.
+
+    A release website read twenty pages deep makes a file of several
+    megabytes, and every cover and every Install asks for it.
+    """
+    path = _catalogue_cache_path()
+    try:
+        info = path.stat()
+        stamp = (info.st_mtime_ns, info.st_size)
+    except OSError:
+        return {}
+    if _CATALOGUE_MEMO["stamp"] != stamp:
+        _CATALOGUE_MEMO["data"] = _read_json(path, {})
+        _CATALOGUE_MEMO["stamp"] = stamp
+    return _CATALOGUE_MEMO["data"]
+
+
 def load_catalogues(force: bool = False) -> list[dict]:
     """Every catalogue with its games; user ones are re-read when stale."""
     settings = library.load_settings()
@@ -515,7 +537,7 @@ def load_catalogues(force: bool = False) -> list[dict]:
     out = [{"id": BUILTIN_ID, "name": BUILTIN_NAME, "builtin": True, "enabled": builtin_on,
             "source": "", "error": "", "games": builtin_games() if builtin_on else []}]
     with _LOCK:
-        cache = _read_json(_catalogue_cache_path(), {})
+        cache = _catalogue_cache()
         changed = False
         for entry in clean_catalogue_list(settings.get("store_catalogues")):
             cid, source = entry["id"], entry["source"]
@@ -855,6 +877,7 @@ def _run_job(job: StoreJob, game: dict) -> None:
         job.phase, job.error = "failed", str(exc) or type(exc).__name__
         job.message = job.error
     finally:
+        _release_reservation(job)
         if job.phase in ("cancelled", "failed", "done"):
             job.finished = job.finished or time.time()
             job.progress = -1.0 if job.phase != "done" else 1.0
@@ -882,11 +905,10 @@ def _install_steps(job: StoreJob, game: dict) -> None:
         job.message = (f"{mb:,.0f} MB of {total / 1048576:,.0f} MB" if total
                        else f"{mb:,.0f} MB")
 
-    shared = None                  # (client, info hash) for a BitTorrent download
+    shared = None                  # the TorrentResult, for a BitTorrent download
     if is_torrent(url):
-        path, client, info_hash = _torrent_download(job, url, folder, settings)
-        result = {"path": str(path), "name": path.name}
-        shared = (client, info_hash)
+        shared = _torrent_download(job, url, folder, settings)
+        result = {"path": str(shared.path), "name": shared.path.name}
     else:
         # A direct link names its file before anything is fetched, and a
         # server may still rename it on the way; both are checked.
@@ -927,11 +949,13 @@ def _install_and_record(job: StoreJob, game: dict, settings: dict, folder: Path,
         except Exception as exc:          # installed is installed, whatever Steam says
             record["steam"], record["steam_error"] = "failed", str(exc)
     _change_state(lambda state: state["installed"].__setitem__(game["id"], record))
-    if shared and settings.get("store_keep_seeding"):
+    if shared is not None and not shared.ours:
+        pass                       # the person's own torrent: neither it nor its files are touched
+    elif shared is not None and settings.get("store_keep_seeding"):
         pass                       # left in the torrent client, still being shared
     else:
-        if shared:
-            _forget_torrent(*shared)
+        if shared is not None:
+            _forget_torrent(shared.client, shared.info_hash)
         _tidy(Path(result.get("tidy") or result["path"]), folder, settings)
 
     job.phase, job.finished = "done", time.time()
@@ -1001,12 +1025,20 @@ def _fetch_release(job: StoreJob, game: dict, settings: dict, folder: Path):
                          "direct downloads only." if swarm else
                          "This release has no torrent, and the store is set to BitTorrent only.")
 
+    home = folder / _folder_name(game["name"])
+    download_size = int(game.get("download_size") or 0)
     problems = []
-    for way in order:
+    for number, way in enumerate(order):
+        fallback = number < len(order) - 1
         try:
             if way == "torrent":
-                return _release_by_torrent(job, swarm, folder, settings)
-            target = _download_release(job, game, mirrors, folder, settings)
+                _reserve(job, home, max(0, download_size - installers.folder_size(home / "torrent")))
+                return _release_by_torrent(job, game, swarm, home, settings, fallback)
+            with _direct_slot(job, settings):
+                # Room for the download, and for unpacking it beside itself.
+                have = installers.folder_size(home) if home.is_dir() else 0
+                _reserve(job, home, max(0, download_size - have) + int(game.get("size") or 0))
+                target = _download_release(job, game, mirrors, folder, settings)
             return {"path": str(_prepare_release(job, target, settings)),
                     "tidy": str(target)}, None
         except StoreError as exc:
@@ -1014,16 +1046,119 @@ def _fetch_release(job: StoreJob, game: dict, settings: dict, folder: Path):
     raise StoreError(" Then: ".join(problems))
 
 
-def _release_by_torrent(job: StoreJob, swarm: list, folder: Path, settings: dict):
+def _release_by_torrent(job: StoreJob, game: dict, swarm: list, home: Path, settings: dict,
+                        fallback: bool):
+    """The release over BitTorrent, into the game's own folder.
+
+    Optional files are left unchosen in the torrent client, exactly as the
+    direct route leaves them undownloaded. When the mirrors are there to
+    fall back on, a torrent nobody is sharing is given up on after a while
+    instead of being waited on for ever.
+    """
     job.phase, job.progress = "downloading", -1.0
+    language = settings.get("store_language") or "english"
+    wanted_extras = bool(settings.get("store_optional_files"))
+
+    def skip(name: str) -> bool:
+        return not wanted_extras and sitecatalog.is_optional(name, language)
+
+    patience = Patience() if fallback else None
     problems = []
-    for item in swarm[:3]:
+    for number, item in enumerate(swarm[:3]):
+        last = number == min(len(swarm), 3) - 1
         try:
-            path, client, info_hash = _torrent_download(job, item["url"], folder, settings)
-            return {"path": str(path)}, (client, info_hash)
+            got = _torrent_download(job, item["url"], home / "torrent", settings,
+                                    check_name=False, skip=skip,
+                                    patience=patience if (fallback or not last) else None)
         except StoreError as exc:
             problems.append(str(exc))
+            continue
+        path = got.path
+        if path.is_dir() and installers.find_installer(path) is None and _archive_sets(
+                [p for p in path.iterdir() if p.is_file()]):
+            # Packed inside the torrent too. Unpacked beside it; the
+            # archives stay while the torrent might still be shared.
+            keep = dict(settings, store_keep_downloads=True)
+            path = _prepare_release(job, path, keep, staging=home / UNPACKED)
+        return {"path": str(path), "tidy": str(home)}, got
     raise StoreError(problems[0] if len(set(problems)) == 1 else " ".join(problems))
+
+
+# --- many downloads at once ------------------------------------------------
+#
+# Pressing Install on thirty games is expected. Thirty threads pulling from
+# the same three file hosts at once get throttled or banned, and thirty
+# releases that each fit the disk on their own do not fit it together. So
+# direct downloads take turns, a few at a time, and each job sets aside the
+# space it will need before starting, counting what the others have set
+# aside and not yet written. Torrents need no turns of their own: the
+# torrent app has its own queue, which the store waits in and shows.
+
+_SLOTS = threading.Condition()
+_DOWNLOADING: set = set()
+_RESERVED: dict = {}             # job id -> (disk key, folder, bytes)
+SPACE_MARGIN = 2 * 1024 ** 3     # never fill a disk to the last byte
+
+
+def parallel_downloads(settings: dict | None = None) -> int:
+    settings = settings or library.load_settings()
+    try:
+        return max(1, min(6, int(settings.get("store_parallel_downloads") or 2)))
+    except (TypeError, ValueError):
+        return 2
+
+
+@contextlib.contextmanager
+def _direct_slot(job: StoreJob, settings: dict):
+    with _SLOTS:
+        while len(_DOWNLOADING) >= parallel_downloads(settings):
+            if job.cancel:
+                raise Stopped()
+            job.phase, job.progress = "downloading", -1.0
+            ahead = len(_DOWNLOADING)
+            job.message = (f"Waiting its turn: {ahead} download{'s' if ahead != 1 else ''} "
+                           "running")
+            _SLOTS.wait(1)
+        _DOWNLOADING.add(job.id)
+    try:
+        yield
+    finally:
+        with _SLOTS:
+            _DOWNLOADING.discard(job.id)
+            _SLOTS.notify_all()
+
+
+def _reserve(job: StoreJob, folder: Path, need: int) -> None:
+    """Set aside disk space for a download, or say why it will not fit."""
+    with _SLOTS:
+        _RESERVED.pop(job.id, None)
+    if need <= 0:
+        return
+    room = drives.space(folder)
+    if not room.get("ok"):
+        return
+    key = drives.volume_key(folder)
+    with _SLOTS:
+        others = list((jid, entry) for jid, entry in _RESERVED.items() if jid != job.id)
+    # What another download has already written is already gone from the
+    # free space, so only the rest of its share is still to come.
+    pending = 0
+    for _jid, (other_key, other_folder, amount) in others:
+        if other_key == key:
+            written = installers.folder_size(other_folder) if other_folder.is_dir() else 0
+            pending += max(0, amount - written)
+    if room["free"] - pending < need + SPACE_MARGIN:
+        promised = f", with {placement.human(pending)} set aside for other downloads" if pending else ""
+        raise StoreError(f"Not enough free space in {folder.parent}: this needs about "
+                         f"{placement.human(need)} and {placement.human(room['free'])} is free"
+                         f"{promised}. Free some space or choose another download folder.")
+    with _SLOTS:
+        _RESERVED[job.id] = (key, folder, need)
+
+
+def _release_reservation(job: StoreJob) -> None:
+    with _SLOTS:
+        _RESERVED.pop(job.id, None)
 
 
 def _release_files(mirrors: list, optional: bool) -> tuple[list, dict]:
@@ -1117,6 +1252,25 @@ def _download_release(job: StoreJob, game: dict, mirrors: list, folder: Path,
     return target
 
 
+_UNPACK_LOCK = threading.Lock()
+
+
+def _unpack_all(job: StoreJob, firsts: list[Path], staging: Path, progress) -> None:
+    if staging.exists():
+        shutil.rmtree(staging, ignore_errors=True)     # a half-finished earlier attempt
+    try:
+        for number, volume in enumerate(firsts):
+            job.message = "Unpacking the download"
+            pipeline.unpack(str(volume), into=str(staging), keep_archive=True, progress=progress,
+                            flatten=(number == 0), stop=lambda: job.cancel)
+    except pipeline.Stopped as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise Stopped() from exc
+    except pipeline.PipelineError as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise StoreError(f"The download would not unpack: {exc}") from exc
+
+
 VOLUME_TAIL = re.compile(r"(?i)(\.part\d+\.rar|\.(7z|zip|rar)\.\d{3}|\.r\d{2}|\.rar)$")
 
 
@@ -1134,7 +1288,8 @@ def _archive_sets(files: list[Path]) -> list[Path]:
     return out
 
 
-def _prepare_release(job: StoreJob, target: Path, settings: dict) -> Path:
+def _prepare_release(job: StoreJob, target: Path, settings: dict,
+                     staging: Path | None = None) -> Path:
     """What the install queue should be given for a downloaded release.
 
     A release packed as an archive usually holds a setup program, not the
@@ -1146,7 +1301,7 @@ def _prepare_release(job: StoreJob, target: Path, settings: dict) -> Path:
     extras - belong next to that setup program, which looks for them in
     its own folder, so they are moved there.
     """
-    staging = target / UNPACKED
+    staging = staging or target / UNPACKED
     if (staging / UNPACKED_MARK).is_file():
         return staging
     files = [p for p in target.iterdir() if p.is_file() and not p.name.startswith(".")
@@ -1175,19 +1330,15 @@ def _prepare_release(job: StoreJob, target: Path, settings: dict) -> Path:
         job.progress = max(0.0, min(float(fraction), 1.0))
         job.message = f"Unpacking {Path(name).name}" if name else "Unpacking the download"
 
-    if staging.exists():
-        shutil.rmtree(staging, ignore_errors=True)     # a half-finished earlier attempt
+    # Unpacking is all disk; several at once only makes each slower.
+    while not _UNPACK_LOCK.acquire(timeout=1):
+        if job.cancel:
+            raise Stopped()
+        job.message = "Waiting for another game to finish unpacking"
     try:
-        for number, volume in enumerate(firsts):
-            job.message = "Unpacking the download"
-            pipeline.unpack(str(volume), into=str(staging), keep_archive=True, progress=progress,
-                            flatten=(number == 0), stop=lambda: job.cancel)
-    except pipeline.Stopped as exc:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise Stopped() from exc
-    except pipeline.PipelineError as exc:
-        shutil.rmtree(staging, ignore_errors=True)
-        raise StoreError(f"The download would not unpack: {exc}") from exc
+        _unpack_all(job, firsts, staging, progress)
+    finally:
+        _UNPACK_LOCK.release()
 
     packed = {p for p in files if installers.is_archive(p) or VOLUME_TAIL.search(p.name)}
     setup = installers.find_installer(staging)
@@ -1282,8 +1433,100 @@ def _eta(seconds: int) -> str:
     return f"{seconds / 3600:.1f} hours left"
 
 
-def _torrent_download(job: StoreJob, url: str, folder: Path, settings: dict):
-    """Have the torrent client fetch it into the store's folder; wait for it."""
+TORRENT_TAG = "Game Store"
+POLL_SECONDS = 3
+CLIENT_GRACE = 180         # how long the torrent app may stop answering before giving up
+
+
+@dataclass
+class Patience:
+    """When to give up on a torrent because something else could be tried.
+
+    Only used when there is an alternative, such as the release's mirrors.
+    With nothing else to try, waiting for sharers is the only way forward,
+    so a torrent is waited on for as long as it takes.
+    """
+    details: int = 15 * 60      # seconds without the torrent's details while not queued
+    stalled: int = 45 * 60      # seconds without a byte of progress while not queued
+
+
+@dataclass
+class TorrentResult:
+    path: Path
+    client: object
+    info_hash: str
+    ours: bool                  # added by the store, so the store may remove it
+
+
+def _own_torrent(info_hash: str, gid: str = "", forget: bool = False) -> bool:
+    """Remember, or forget, that the store added this torrent.
+
+    Kept on disk because a download outlives the app: after a restart,
+    pressing Install again finds the torrent already in the client, and
+    it must still be known as the store's to tidy up - and a torrent the
+    person added themselves must never be removed or have its files
+    deleted by the store.
+    """
+    def change(state: dict) -> None:
+        owned = state.setdefault("torrents", {})
+        if forget:
+            owned.pop(info_hash, None)
+        else:
+            owned[info_hash] = {"game": gid, "at": time.time()}
+    if gid or forget:
+        _change_state(change)
+    return info_hash in (load_state().get("torrents") or {})
+
+
+def _client_call(job: StoreJob, client, call, *args, **kwargs):
+    """A call to the torrent app that tolerates it restarting.
+
+    With many downloads running, the client being busy or restarted for a
+    minute is normal and should not fail every one of them at once.
+    """
+    first_failure = 0.0
+    while True:
+        try:
+            return call(*args, **kwargs)
+        except torrentclient.TorrentClientError as exc:
+            now = time.time()
+            first_failure = first_failure or now
+            if now - first_failure > CLIENT_GRACE or "password" in str(exc):
+                raise StoreError(str(exc)) from exc
+            job.message = f"{client.label} is not answering; waiting for it"
+            if job.cancel:
+                raise Stopped() from exc
+            time.sleep(POLL_SECONDS)
+
+
+def _choose_files(job: StoreJob, client, info_hash: str, skip) -> list[str]:
+    """Leave out the files ``skip`` says are not needed. Returns their names.
+
+    An older client that cannot choose files simply downloads them all;
+    that costs disk space, not the game, so it is not an error.
+    """
+    try:
+        files = client.files(info_hash)
+        if not files:
+            return []
+        unwanted = [f for f in files if skip(PurePath(f["name"]).name)]
+        if not unwanted or len(unwanted) == len(files):
+            return []                       # never deselect everything
+        client.skip(info_hash, [f["index"] for f in unwanted])
+    except torrentclient.TorrentClientError:
+        return []
+    return [f["name"] for f in unwanted]
+
+
+def _torrent_download(job: StoreJob, url: str, folder: Path, settings: dict,
+                      check_name: bool = True, skip=None,
+                      patience: Patience | None = None) -> TorrentResult:
+    """Have the torrent client fetch it into ``folder``; wait for it.
+
+    ``skip(file_name)`` names files of the torrent not to download, such as
+    a release's optional extras. ``patience`` gives up on a torrent that
+    cannot get going, for when there is another way to get the game.
+    """
     client = torrent_client(settings)
     magnet, blob, name = "", b"", ""
     if url.lower().startswith("magnet:"):
@@ -1300,48 +1543,92 @@ def _torrent_download(job: StoreJob, url: str, folder: Path, settings: dict):
         info_hash, name = info["hash"], info.get("name", "")
     if not info_hash:
         raise StoreError("That magnet link does not say which torrent it is.")
-    problem = _not_the_game(name) if name else ""
+    info_hash = info_hash.lower()
+    problem = _not_the_game(name) if name and check_name else ""
     if problem:
         raise StoreError(problem)
 
     job.message = f"Handing it to {client.label}"
-    try:
-        if not client.status([info_hash]):
-            client.add(magnet=magnet, torrent=blob, save_path=str(folder))
-    except torrentclient.TorrentClientError as exc:
-        raise StoreError(str(exc)) from exc
-
-    started = time.time()
-    while True:
-        if job.cancel:
-            _forget_torrent(client, info_hash, delete_files=True)
-            raise Stopped()
+    present = _client_call(job, client, client.status, [info_hash])
+    ours = _own_torrent(info_hash)
+    if not present:
+        folder.mkdir(parents=True, exist_ok=True)
         try:
-            items = client.status([info_hash])
+            client.add(magnet=magnet, torrent=blob, save_path=str(folder), tag=TORRENT_TAG)
         except torrentclient.TorrentClientError as exc:
             raise StoreError(str(exc)) from exc
+        ours = _own_torrent(info_hash, gid=job.id)
+
+    added_at = time.time()
+    last_progress, last_change = -1.0, time.time()
+    details_wait = 0.0
+    skipped: list[str] = []
+    chosen = skip is None or not ours    # never change file choices on someone else's torrent
+
+    def give_up(reason: str) -> None:
+        if ours:
+            # Switching to another way of getting the game: what was
+            # fetched so far would only take up the disk.
+            _forget_torrent(client, info_hash, delete_files=True)
+        raise StoreError(reason)
+
+    while True:
+        if job.cancel:
+            if ours:
+                _forget_torrent(client, info_hash, delete_files=True)
+            raise Stopped()
+        items = _client_call(job, client, client.status, [info_hash])
+        now = time.time()
         if not items:
-            if time.time() - started > 60:
+            if now - added_at > 90:
+                if ours:
+                    _own_torrent(info_hash, forget=True)
                 raise StoreError(f"{client.label} no longer has the torrent; it may have "
                                  "been removed there.")
-            time.sleep(2)
+            time.sleep(POLL_SECONDS)
             continue
         item = items[0]
-        if item["state"] == "error":
+        state = item["state"]
+        if state == "error":
             raise StoreError(f"{client.label}: {item['error'] or 'the torrent stopped with an error.'}")
-        if item["progress"] >= 1 and item["state"] not in ("checking", "moving"):
+
+        if not chosen and state != "fetching details":
+            skipped = _choose_files(job, client, info_hash, skip)
+            chosen = True
+            if skipped:
+                continue                    # progress is now counted over what is left
+
+        if item["progress"] >= 1 and state not in ("checking", "moving", "fetching details"):
             content = item.get("content") or os.path.join(item.get("path", ""), item.get("name", ""))
             path = Path(content)
             if not path.exists():
                 raise StoreError(f"{client.label} finished, but the files are not at {path}.")
-            return path, client, info_hash
-        if item["state"] == "fetching details":
+            _drop_skipped(path, item, skipped)
+            return TorrentResult(path, client, info_hash, ours)
+
+        # Time spent in the client's own queue, or paused by the person, is
+        # not the torrent failing; only the rest counts against patience.
+        idle = state in ("queued", "paused")
+        if idle:
+            last_change = now
+        if item["progress"] > last_progress:
+            last_progress, last_change = item["progress"], now
+        if state == "fetching details" and not idle:
+            details_wait += POLL_SECONDS
+        if patience is not None and not idle:
+            if details_wait > patience.details:
+                give_up(f"Nobody shared the torrent's details in {patience.details // 60} "
+                        "minutes.")
+            if state != "fetching details" and now - last_change > patience.stalled:
+                give_up(f"The torrent made no progress for {patience.stalled // 60} minutes.")
+
+        if state == "fetching details":
             job.progress, job.message = -1.0, "Finding the torrent's details"
-        elif item["state"] in ("stalled", "queued", "paused"):
+        elif state in ("stalled", "queued", "paused"):
             job.progress = item["progress"] if item["progress"] > 0 else -1.0
             job.message = {"stalled": "Waiting for someone sharing it",
-                           "queued": f"Queued in {client.label}",
-                           "paused": f"Paused in {client.label}"}[item["state"]]
+                           "queued": f"Queued in {client.label} behind other downloads",
+                           "paused": f"Paused in {client.label}"}[state]
         else:
             job.progress = item["progress"]
             parts = [f"{item['progress'] * 100:.0f}%"]
@@ -1350,7 +1637,32 @@ def _torrent_download(job: StoreJob, url: str, folder: Path, settings: dict):
             if _eta(item.get("eta", 0)):
                 parts.append(_eta(item["eta"]))
             job.message = " · ".join(parts)
-        time.sleep(2)
+        time.sleep(POLL_SECONDS)
+
+
+def _drop_skipped(content: Path, item: dict, skipped: list[str]) -> None:
+    """Delete what a client left of files it was told not to download.
+
+    A piece can straddle two files, so a client may write the start of a
+    skipped file. A setup program that finds a half-written optional file
+    beside it tries to install it and fails its checksum.
+    """
+    if not skipped:
+        return
+    base = Path(item.get("path") or "")
+    if base == content or not base.is_dir():
+        base = content.parent
+    for name in skipped:
+        target = base / name
+        try:
+            target.resolve().relative_to(content.resolve())
+        except (OSError, ValueError):
+            continue                       # only ever inside this torrent's own folder
+        try:
+            if target.is_file():
+                target.unlink()
+        except OSError:
+            pass
 
 
 def _forget_torrent(client, info_hash: str, delete_files: bool = False) -> None:
@@ -1358,7 +1670,8 @@ def _forget_torrent(client, info_hash: str, delete_files: bool = False) -> None:
     try:
         client.remove([info_hash], delete_files=delete_files)
     except torrentclient.TorrentClientError:
-        pass
+        return                             # still remembered, so a later tidy can retry
+    _own_torrent(info_hash, forget=True)
 
 
 # --------------------------------------------------------------------------
@@ -1870,6 +2183,7 @@ def store_settings(settings: dict | None = None) -> dict:
         "site_method": settings.get("store_site_method", "auto"),
         "optional_files": bool(settings.get("store_optional_files")),
         "site_pages": _site_pages(settings),
+        "parallel": parallel_downloads(settings),
         "torrent": torrent_info(),
         "catalogues": clean_catalogue_list(settings.get("store_catalogues")),
     }
@@ -1891,6 +2205,9 @@ def save_store_settings(payload: dict) -> dict:
         patch["store_catalogues"] = clean_catalogue_list(payload["catalogues"])
     if "optional_files" in payload:
         patch["store_optional_files"] = bool(payload["optional_files"])
+    if "parallel" in payload:
+        patch["store_parallel_downloads"] = parallel_downloads(
+            {"store_parallel_downloads": payload["parallel"]})
     if "site_pages" in payload:
         patch["store_site_pages"] = _site_pages({"store_site_pages": payload["site_pages"]})
     if patch:

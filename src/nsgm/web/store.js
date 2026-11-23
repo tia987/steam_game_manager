@@ -542,6 +542,10 @@ function renderDetailState() {
   const id = game.id;
   if (state.kind === "available") {
     actions.append(button("Install", "btn--primary btn--big", () => install(id), "d:install"));
+    if (usableFolders().length > 1) {
+      actions.append(button("Install to…", "btn--big btn--quiet",
+                            () => pickDrive(game, (path) => install(id, path)), "d:installto"));
+    }
   } else if (state.kind === "busy") {
     actions.append(button("Cancel", "btn--big", () => cancel(id), "d:cancel"));
   } else if (state.kind === "waiting") {
@@ -576,7 +580,12 @@ function renderDetailState() {
 
 // ------------------------------------------------------------------ actions
 
-async function install(id) {
+async function install(id, target = null) {
+  const game = S.byId.get(id) || { id, name: "this game" };
+  if (target === null && S.data && S.data.library_ready && libraryState().ask && usableFolders().length > 1) {
+    pickDrive(game, (path) => install(id, path));
+    return;
+  }
   if (S.data && !S.data.library_ready) {
     const choices = S.data.library_choices || [];
     if (!choices.length) {
@@ -592,7 +601,7 @@ async function install(id) {
     return;
   }
   try {
-    const { job } = await api("/api/store/install", { id });
+    const { job } = await api("/api/store/install", { id, target: target || "" });
     S.jobs[id] = job;
     S.phases[id] = job.phase;
     applyStatus({ ...currentStatus(), jobs: S.jobs }, true);
@@ -736,7 +745,9 @@ function leaveSteamStep() {
     return;
   }
   // One stray press of B should never throw someone out of the store.
-  ask("Leave the store?", S.data && S.data.store_window ? "The store closes. Steam stays as it is."
+  ask("Leave the store?", S.data && S.data.streaming
+    ? "The store closes and this Moonlight stream ends. Start your Steam app in Moonlight next."
+    : S.data && S.data.store_window ? "The store closes. Steam stays as it is."
     : "This goes back to the game manager.", [
     { label: "Leave", primary: true, run: quit },
     { label: "Stay in the store", run: () => {} },
@@ -875,7 +886,8 @@ function renderSettings() {
   for (const [id, value] of [["optRestart", settings.restart], ["optReopen", settings.reopen],
                              ["optGlyphs", settings.glyphs || "auto"],
                              ["optSiteMethod", settings.site_method || "auto"],
-                             ["optParallel", String(settings.parallel || 2)]]) {
+                             ["optParallel", String(settings.parallel || 2)],
+                             ["optTorrentEngine", (settings.torrent || {}).engine || "builtin"]]) {
     for (const seg of $(id).querySelectorAll(".seg")) seg.classList.toggle("is-on", seg.dataset.value === value);
   }
   $("optKeep").setAttribute("aria-checked", settings.keep_downloads ? "true" : "false");
@@ -886,9 +898,24 @@ function renderSettings() {
   $("sitePagesValue").textContent = every ? "All" : String(settings.site_pages || 10);
   $("optSeed").setAttribute("aria-checked", settings.keep_seeding ? "true" : "false");
   const torrent = settings.torrent || {};
-  $("torrentState").textContent = torrent.label
-    ? `${torrent.label} at ${torrent.url.replace(/^https?:\/\//, "")}. Games shared over BitTorrent download through it, and it is tidied up after each install.`
-    : "None found yet. Start Transmission or qBittorrent with remote access on, and the store finds it by itself.";
+  const builtin = (torrent.engine || "builtin") === "builtin" && torrent.builtin_available;
+  $("torrentLogin").hidden = builtin;
+  $("torrentLook").hidden = builtin;
+  $("seedLine").hidden = builtin;
+  $("torrentTitle").textContent = builtin ? "Built-in downloader" : (torrent.label || "Your torrent app");
+  $("torrentState").textContent = builtin
+    ? (torrent.builtin_ready ? "Ready. Nothing else needs to be open. It downloads, then stops: no sharing afterwards."
+      : "Fetched the first time a game needs it (2.5 MB). Nothing else needs to be open, and nothing is shared afterwards.")
+    : (torrent.engine === "builtin" && !torrent.builtin_available)
+    ? "The built-in downloader needs aria2 on this system (install it with your package manager). Until then your torrent app is used."
+    : torrent.label
+    ? `${torrent.label} at ${torrent.url.replace(/^https?:\/\//, "")}${torrent.username ? `, signed in as ${torrent.username}` : ""}. Games download through it, and it is tidied up after each install.`
+    : "None found yet. Start Transmission or qBittorrent with remote access on, then press Look for it.";
+
+  $("sunshineCommand").textContent = S.data.sunshine_command || "";
+  $("streamState").textContent = S.data.streaming
+    ? "This store is running as its own Sunshine app. Leaving it ends the stream; Steam restarts quietly behind it when new games need it."
+    : "Give the store its own app in Sunshine, next to Steam, to open it straight from Moonlight.";
 
   const waitingSelf = S.pending.includes("Game Store");
   $("addSelf").textContent = S.data.store_shortcut ? "Add again" : waitingSelf ? "Waiting for restart" : "Add to Steam";
@@ -902,9 +929,7 @@ function renderSettings() {
   const focusKey = keyOf(document.activeElement);
   pick.innerHTML = "";
   if (S.data.library_ready) {
-    const line = make("p", "group__lede",
-      "Games install into your library folders. Add more or change their order in the main app, under Installs.");
-    pick.append(line);
+    renderDrives(pick);
   } else {
     pick.append(make("p", "group__lede", "Choose where games go. A Games folder is made on the drive you pick."));
     const list = make("div", "choices");
@@ -945,6 +970,140 @@ function renderSettings() {
     rows.append(row);
   }
   restoreFocus($("view-settings"), focusKey);
+}
+
+// ------------------------------------------------------------------ where games go
+
+function libraryState() {
+  return (S.data && S.data.library) || { folders: [], choices: [], ask: false };
+}
+
+function usableFolders() {
+  return libraryState().folders.filter((f) => f.enabled && f.connected);
+}
+
+function driveText(folder) {
+  const kind = { ssd: "SSD", hdd: "Hard disk" }[folder.kind] || "Drive";
+  const parts = [kind];
+  if (!folder.connected) parts.push("not connected");
+  else parts.push(`${human(folder.free)} free of ${human(folder.total)}`);
+  if (!folder.enabled) parts.push("switched off");
+  else if (folder.priority === 1) parts.push("first choice");
+  return parts.join(" · ");
+}
+
+function renderDrives(box) {
+  const lib = libraryState();
+  box.append(make("p", "group__lede",
+    "Games go to the first folder below with room for them (and an SSD, for games that need one). " +
+    "Put a drive first to fill it before the others."));
+  for (const folder of lib.folders) {
+    const row = make("div", "drive" + (folder.enabled ? "" : " is-off"));
+    const body = make("div");
+    body.append(make("p", "line__title", folder.path), make("p", "line__sub", driveText(folder)));
+    const actions = make("div", "drive__actions");
+    if (folder.priority !== 1 || !folder.enabled) {
+      actions.append(button("Use first", "", () => changeDrive("first", folder.path), `drive:first:${folder.path}`));
+    }
+    actions.append(button(folder.enabled ? "Switch off" : "Switch on", "",
+                          () => changeDrive("toggle", folder.path), `drive:toggle:${folder.path}`));
+    actions.append(button("Remove", "btn--danger", () => confirmRemoveDrive(folder.path),
+                          `drive:remove:${folder.path}`));
+    row.append(body, actions);
+    box.append(row);
+  }
+  if (lib.choices.length) {
+    box.append(make("p", "label", "Add another drive"));
+    const list = make("div", "choices");
+    for (const choice of lib.choices) {
+      const item = make("button", "choice nav");
+      item.type = "button";
+      item.dataset.key = `drive:add:${choice.path}`;
+      item.append(make("span", "", choice.path), make("small", "", `${human(choice.free)} free of ${human(choice.total)}`));
+      item.addEventListener("click", () => changeDrive("add", choice.path));
+      list.append(item);
+    }
+    box.append(list);
+  }
+  const line = make("div", "line");
+  const text = make("div");
+  text.append(make("p", "line__title", "Ask which drive for each game"),
+              make("p", "line__sub", "Off: games go where the order above says. A game's page also has Install to…"));
+  const toggle = make("button", "toggle nav");
+  toggle.type = "button";
+  toggle.setAttribute("role", "switch");
+  toggle.setAttribute("aria-checked", lib.ask ? "true" : "false");
+  toggle.dataset.key = "drive:ask";
+  toggle.append(make("span"));
+  toggle.addEventListener("click", async () => {
+    if (await saveSettings({ ask_drive: !lib.ask })) {
+      S.data.library.ask = !lib.ask;
+      renderSettings();
+    }
+  });
+  line.append(text, toggle);
+  box.append(line);
+}
+
+async function changeDrive(action, path) {
+  try {
+    const result = await api("/api/store/library", { action, path, keep_view: true });
+    S.data.library = result.library;
+    S.data.library_ready = result.library.folders.some((f) => f.enabled);
+    renderSettings();
+    if (action === "add") toast(`Games can go to ${path} now`);
+  } catch (error) {
+    toast(error.message, "bad");
+  }
+}
+
+function confirmRemoveDrive(path) {
+  ask("Take this folder out of the list?", `${path}: games already there stay where they are; ` +
+      "nothing is deleted. New games just will not go there.", [
+    { label: "Take it out", primary: true, run: () => changeDrive("remove", path) },
+    { label: "Keep it", run: () => {} },
+  ]);
+}
+
+function pickDrive(game, then) {
+  const folders = usableFolders();
+  const need = game.size || 0;
+  ask(`Install ${game.name} to…`, need ? `It needs about ${human(need)}.` : "Pick a drive.",
+    folders.map((folder, index) => ({
+      label: `${folder.path} · ${human(folder.free)} free${need && folder.free < need ? " (too small)" : ""}`,
+      primary: index === 0,
+      run: () => then(folder.path),
+    })).concat([{ label: "Choose for me", run: () => then("") },
+                { label: "Not now", run: () => {} }]));
+}
+
+// ------------------------------------------------------------------ signing in to a torrent app
+
+function torrentLogin() {
+  const torrent = (S.data.settings && S.data.settings.torrent) || {};
+  openKeyboard({
+    label: "Torrent app username",
+    value: torrent.username || "",
+    onDone: (username) => {
+      openKeyboard({
+        label: "Torrent app password",
+        value: "",
+        secret: true,
+        onDone: async (password) => {
+          try {
+            const found = await api("/api/store/torrent-login", { username, password });
+            S.data.settings.torrent = found;
+            S.data.settings.torrent.engine = "app";
+            renderSettings();
+            toast(found.message, "good");
+          } catch (error) {
+            toast(error.message, "bad");
+          }
+          focusOn($("torrentLogin"));
+        },
+      });
+    },
+  });
 }
 
 function siteProgress(entry) {
@@ -1171,8 +1330,9 @@ function paintKeys() {
   if (shift) shift.classList.toggle("is-on", KB.shift);
 }
 
-function openKeyboard({ label, value, onInput, onDone }) {
+function openKeyboard({ label, value, onInput, onDone, secret = false }) {
   if (!KB.built) buildKeyboard();
+  KB.secret = secret;
   KB.returnTo = document.activeElement;
   KB.onInput = onInput;
   KB.onDone = onDone;
@@ -1188,7 +1348,7 @@ function openKeyboard({ label, value, onInput, onDone }) {
 
 function kbSet(value, silent = false) {
   KB.value = value.slice(0, 2000);
-  $("kbValue").textContent = KB.value;
+  $("kbValue").textContent = KB.secret ? "•".repeat(KB.value.length) : KB.value;
   if (!silent && KB.onInput) KB.onInput(KB.value);
 }
 
@@ -1770,7 +1930,7 @@ function wire() {
   $("libraryRestart").addEventListener("click", () => restartFlow(true));
 
   for (const [id, field] of [["optRestart", "restart"], ["optReopen", "reopen"], ["optGlyphs", "glyphs"],
-                             ["optSiteMethod", "site_method"]]) {
+                             ["optSiteMethod", "site_method"], ["optTorrentEngine", "torrent_engine"]]) {
     for (const seg of $(id).querySelectorAll(".seg")) {
       seg.dataset.key = `${id}:${seg.dataset.value}`;
       seg.addEventListener("click", async () => {
@@ -1784,14 +1944,17 @@ function wire() {
   }
   $("optSeed").dataset.key = "optSeed";
   $("optSeed").addEventListener("click", () => saveSettings({ keep_seeding: !S.data.settings.keep_seeding }));
+  $("torrentLogin").dataset.key = "torrentLogin";
+  $("torrentLogin").addEventListener("click", torrentLogin);
   $("torrentLook").dataset.key = "torrentLook";
   $("torrentLook").addEventListener("click", async () => {
     $("torrentLook").disabled = true;
     try {
       const found = await api("/api/store/torrent-client", {});
-      S.data.settings.torrent = { label: found.label, url: found.url };
+      S.data.settings.torrent = found;
       renderSettings();
-      toast(found.message, found.label ? "good" : "bad");
+      toast(found.message, found.label && !found.needs_login ? "good" : "bad");
+      if (found.needs_login) torrentLogin();
     } catch (error) {
       toast(error.message, "bad");
     } finally {
@@ -1844,6 +2007,23 @@ function wire() {
   $("catalogueCheck").addEventListener("click", checkCatalogue);
   $("catalogueAdd").dataset.key = "catAdd";
   $("catalogueAdd").addEventListener("click", addCatalogue);
+  $("catalogueRescan").dataset.key = "catRescan";
+  $("catalogueRescan").addEventListener("click", () => {
+    ask("Read everything again?",
+      "Every catalogue is read again from the start. Release websites are re-read in the background, " +
+      "page by page, so the shelf stays usable meanwhile; every game is refreshed, and ones a site " +
+      "has taken down are removed once all of it has been read. Artwork not found before is looked for again.", [
+        { label: "Read everything again", primary: true, run: async () => {
+          try {
+            applyOverview(await api("/api/store/refresh-everything", {}));
+            toast("Reading everything again in the background.");
+          } catch (error) {
+            toast(error.message, "bad");
+          }
+        } },
+        { label: "Not now", run: () => {} },
+      ]);
+  });
   $("catalogueRefresh").dataset.key = "catRefresh";
   $("catalogueRefresh").addEventListener("click", async () => {
     $("catalogueRefresh").disabled = true;

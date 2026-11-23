@@ -235,6 +235,22 @@ def open_big_picture() -> dict:
     return {"ok": True, "message": "Starting Steam in Big Picture."}
 
 
+def open_silently() -> dict:
+    """Start Steam without a window, to its tray: for while something else is on screen."""
+    system = platform.system()
+    root = find_steam_root()
+    try:
+        if system == "Windows" and root and (root / "steam.exe").exists():
+            proc.Popen([str(root / "steam.exe"), "-silent"])
+        elif system == "Linux" and shutil.which("steam"):
+            proc.Popen(["steam", "-silent"])
+        else:
+            _open_uri("steam://open/games")
+    except OSError as exc:
+        return {"ok": False, "message": f"Could not start Steam ({exc})."}
+    return {"ok": True, "message": "Starting Steam in the background."}
+
+
 def open_steam() -> dict:
     """Start Steam on the library page, where newly added games appear."""
     try:

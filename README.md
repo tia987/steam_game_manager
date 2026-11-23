@@ -482,9 +482,23 @@ mouse.
 - **From Steam.** Settings → *Add to Steam* puts a **Game Store** tile in
   your library, with its own artwork, so it opens from Big Picture like
   any game.
-- **From Sunshine.** Add an application whose command is
-  `nonsteam-game-manager --store` (or `python -m nsgm --store` from the
-  `src` folder), and pick it in Moonlight.
+- **From Sunshine, as its own Moonlight app.** In Sunshine's web page,
+  Applications → Add new, with the command
+  `nonsteam-game-manager --store --streaming` (the store's Settings →
+  *Moonlight and Sunshine* shows the exact line for your PC) and no
+  detached commands. Then:
+  - **Leave** closes the store completely, which ends that stream, so you
+    can start your Steam app in Moonlight right after. Quitting the app
+    from Moonlight's menu closes the store as well.
+  - The store is not something Steam launched, so when new games need
+    Steam restarted it restarts Steam quietly in the background and stays
+    open, instead of closing and reopening itself mid-stream.
+  - With *run as administrator* on, the store relaunches itself elevated
+    as usual, but the first copy waits for it, so Sunshine still sees one
+    program running; and the elevated copy closes if the first one is
+    ended from Moonlight.
+  - Sunshine's own `SUNSHINE_APP_*` variables are recognised too, so
+    `--streaming` is only a belt and braces.
 - **From the command line.** `python -m nsgm --store` opens it full
   screen; add `--windowed` for a normal window.
 - **From the main app.** The **Store** button in the header.
@@ -595,12 +609,43 @@ Pressing Install on dozens of games is fine:
   not fit says so instead of filling the disk half way through.
 - **Unpacking happens one game at a time**, since it is all disk work.
 
+### Choosing the drive
+
+Settings → *Installing* lists your library folders with each drive's
+type and free space, all workable with the controller:
+
+- **Use first** puts a drive at the top; games go to the first folder
+  with room for them (and an SSD, for games marked as needing one).
+- **Switch off** stops new games going there; **Remove** takes it out of
+  the list. Neither deletes anything; games already there stay.
+- **Add another drive** offers every drive that has no library folder
+  yet; a `Games` folder is made on the one you pick.
+- **Install to…** on a game's page picks the drive for that one game.
+  Turn on *Ask which drive for each game* to be asked every time you
+  press Install.
+
 ### Downloading over BitTorrent
 
-A catalogue can give a magnet link or a `.torrent` address instead of a
-direct download. The store has no BitTorrent engine of its own; it uses
-Transmission or qBittorrent running on the same PC, and drives it the
-whole way so you never open it:
+Settings → *BitTorrent* chooses how torrents are downloaded.
+
+**Built-in downloader** (the default) needs nothing else open and
+nothing set up, which is the point when all you have is a controller
+over Moonlight. It is aria2, a long-established open-source downloader,
+fetched once on first use (2.5 MB, from aria2's own GitHub release, and
+checked against a fixed SHA-256 before it is ever run; on Linux and
+macOS install `aria2` with your package manager). It runs hidden, only
+while the app runs, and takes orders on 127.0.0.1 only, behind a random
+password. It **downloads and stops**: each torrent is finished the
+moment it is complete, with no seeding afterwards. While downloading,
+BitTorrent always sends some pieces to others (that is how the protocol
+works); that is held to 100 KB/s. Three torrents download at once and the
+rest queue. Optional files are left out before anything downloads.
+Windows may ask once whether aria2 may accept connections from the
+network; downloads work either way, so that question can simply be
+closed.
+
+**My torrent app** uses Transmission or qBittorrent running on the same
+PC instead, and drives it the whole way so you never open it:
 
 1. **Finding it.** If no torrent client is set up, the store looks for
    one on its usual port (Transmission 9091, qBittorrent 8080) and keeps
@@ -609,7 +654,10 @@ whole way so you never open it:
    client's remote access, which each client keeps off until you turn it
    on once: Transmission under Edit → Preferences → Remote → *Allow
    remote access*, qBittorrent under Options → Web UI (tick *Bypass
-   authentication for clients on localhost* to skip the password).
+   authentication for clients on localhost* to skip the password). If it
+   wants a password, **Sign in** asks for the username and password with
+   the on-screen keyboard (the password shows as dots) and checks them
+   before keeping them.
 2. **Downloading.** The torrent is added with the store's download folder
    as its destination. Progress, speed and time left show in the store
    like any other download. Cancelling removes it from the client along
@@ -657,7 +705,12 @@ or under **Sources** in the main app's Settings; both edit the same
 list: paste a web address or a file path and press **Check**. The
 file is read and you see its name, its size and a few of its games
 before anything is saved. Catalogues on the web are re-read every six
-hours, or when you press *Refresh all catalogues*.
+hours, or when you press *Check for new games*. *Read everything again*
+reads every catalogue from the start: JSON files are fetched again, and
+release websites are re-read in the background, page by page, with the
+shelf usable meanwhile. Every game is refreshed in place; once a whole
+site has been read, games it no longer lists are removed. Artwork that
+was not found before is looked for again.
 
 The address must lead to the file itself, not to a page showing it.
 Share and page links from GitHub, Gist, GitLab, Codeberg, Pastebin,
@@ -741,8 +794,8 @@ twice, and the store never waits for it:
   carries on from where it stopped. Raising the depth later also carries
   on from there instead of starting over. A whole site of 800-odd pages
   takes roughly a quarter of an hour, once.
-- After that, at most every 30 minutes (or when you press *Refresh all
-  catalogues*), the front page is looked at for new releases. Reading
+- After that, at most every 30 minutes (or when you press *Check for new
+  games*), the front page is looked at for new releases. Reading
   stops at the first release already on the shelf, so that is one
   request unless more than a page of releases came out since. New ones
   join the top of the shelf; releases on the pages read whose title

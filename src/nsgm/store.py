@@ -71,7 +71,7 @@ from pathlib import Path, PurePath
 
 from . import (archive, autoinstall, catalog, download, drives, hosters, installers, library,
                pipeline, placement, proc, scanners, sgdb, sitecatalog, sitesync, steam, tools,
-               torrentclient, torrents, uninstall)
+               torrentclient, torrentengine, torrents, uninstall)
 
 USER_AGENT = "NonSteamGameManager/1.0 (+store)"
 
@@ -95,6 +95,26 @@ PLATFORM_KEYS = {
 # Set by the entry point when the store runs as its own full-screen window.
 # Only then does restarting Steam also close and reopen the store.
 STORE_WINDOW = False
+
+# Set when the store is its own app in Sunshine, streamed to Moonlight. It
+# is not something Steam launched, so it can restart Steam without closing,
+# and closing it - Leave - is what ends the stream.
+STREAMING = False
+
+
+def started_by_sunshine() -> bool:
+    """Sunshine started this, as an app of its own rather than through Steam."""
+    sunshine = any(os.environ.get(k) for k in ("SUNSHINE_APP_ID", "SUNSHINE_APP_NAME"))
+    through_steam = any(os.environ.get(k) for k in ("SteamGameId", "SteamClientLaunch",
+                                                    "SteamAppId"))
+    return sunshine and not through_steam
+
+
+def sunshine_command() -> str:
+    """The command to give Sunshine for an app that opens just the store."""
+    command, _cwd = self_command("--store", "--streaming")
+    return subprocess.list2cmdline(command) if os.name == "nt" else " ".join(
+        f'"{part}"' if " " in part else part for part in command)
 
 
 class StoreError(RuntimeError):
@@ -635,6 +655,28 @@ def _site_entry(entry: dict, depth: int, language: str, force: bool) -> dict:
     }
 
 
+def refresh_everything() -> dict:
+    """Read every catalogue again from scratch: the button for when in doubt.
+
+    JSON catalogues are fetched again. Release websites are read again
+    from the front page, in the background, refreshing every release in
+    place, and dropping the ones a site no longer lists once all of it has
+    been read. Artwork that was not found before is looked for again.
+    """
+    settings = library.load_settings()
+    for entry in clean_catalogue_list(settings.get("store_catalogues")):
+        if entry["enabled"] and sitesync.has_state(entry["id"]):
+            sitesync.rescan(entry["id"], entry["source"])
+    with _ART_LOCK:
+        cache = _read_json(_art_cache_path(), {})
+        cache = {k: v for k, v in cache.items() if not (isinstance(v, dict) and v.get("no_match"))}
+        try:
+            _write_json(_art_cache_path(), cache)
+        except OSError:
+            pass
+    return overview(force=True)
+
+
 def find_game(gid: str) -> dict | None:
     for entry in load_catalogues():
         for game in entry["games"]:
@@ -777,6 +819,7 @@ class StoreJob:
     error: str = ""
     started: float = 0.0
     finished: float = 0.0
+    target: str = ""              # a library folder chosen for this one game, or "" for automatic
     cancel: bool = False
 
     def to_json(self) -> dict:
@@ -828,8 +871,63 @@ def set_library(path: str) -> None:
     autoinstall.QUEUE.retry_waiting("folder")
 
 
-def install(gid: str) -> StoreJob:
-    """Download and install one game, in the background."""
+def _library_paths(settings: dict, enabled_only: bool = True) -> list[str]:
+    return [str(f.get("path")) for f in settings.get("library_folders") or []
+            if isinstance(f, dict) and f.get("path")
+            and (not enabled_only or f.get("enabled", True) is not False)]
+
+
+def library_overview(settings: dict | None = None) -> dict:
+    """The library folders and the drives that could get one, for picking with a controller."""
+    settings = settings or library.load_settings()
+    folders = []
+    for target in placement.describe_all(settings.get("library_folders") or []):
+        folders.append({key: target.get(key) for key in (
+            "path", "kind", "free", "total", "connected", "enabled", "priority", "reserve_gb")})
+    taken = {drives.volume_key(f["path"]) for f in folders}
+    choices = [c for c in library_choices() if drives.volume_key(c["path"]) not in taken]
+    return {"folders": folders, "choices": choices,
+            "ask": bool(settings.get("store_ask_drive"))}
+
+
+def change_library(action: str, path: str) -> dict:
+    """Put a folder first, switch it off or on, take it out of the list, or add a drive.
+
+    Taking a folder out of the list never deletes anything in it; games
+    already there stay where they are.
+    """
+    if action == "add":
+        set_library(path)
+        return library_overview()
+    settings = library.load_settings()
+    folders = [dict(f) for f in settings.get("library_folders") or [] if isinstance(f, dict)]
+    index = next((n for n, f in enumerate(folders)
+                  if str(f.get("path", "")).lower() == path.lower()), None)
+    if index is None:
+        raise StoreError("That folder is not in the list any more.")
+    if action == "first":
+        folders.insert(0, folders.pop(index))
+        folders[0]["enabled"] = True
+    elif action == "toggle":
+        folders[index]["enabled"] = folders[index].get("enabled", True) is False
+    elif action == "remove":
+        folders.pop(index)
+    else:
+        raise StoreError("Unknown change.")
+    library.save_settings({"library_folders": folders})
+    autoinstall.QUEUE.retry_waiting("folder")
+    return library_overview()
+
+
+def install(gid: str, target: str = "") -> StoreJob:
+    """Download and install one game, in the background.
+
+    ``target`` is one of the library folders, chosen for this game alone;
+    without it the usual order and free-space rules choose.
+    """
+    if target:
+        if target not in _library_paths(library.load_settings()):
+            raise StoreError("Pick one of your library folders.")
     with _LOCK:
         job = JOBS.get(gid)
         if job and job.phase in ACTIVE_PHASES:
@@ -840,7 +938,9 @@ def install(gid: str) -> StoreJob:
         if not installable(game):
             raise StoreError("This one has no download for this computer. Its project site "
                              "has the details.")
-        job = StoreJob(id=gid, name=game["name"], started=time.time())
+        previous = JOBS.get(gid)
+        job = StoreJob(id=gid, name=game["name"], started=time.time(),
+                       target=target or (previous.target if previous else ""))
         JOBS[gid] = job
     threading.Thread(target=_run_job, args=(job, game), daemon=True).start()
     return job
@@ -985,7 +1085,8 @@ def _install_and_record(job: StoreJob, game: dict, settings: dict, folder: Path,
     """Queue what was downloaded, wait for it, add it to Steam, tidy up."""
     job.phase, job.progress, job.message = "installing", -1.0, "Waiting its turn"
     task = autoinstall.QUEUE.add(result["path"], name=game["name"], mode="quiet",
-                                 origin="store", size=int(game.get("size") or 0))
+                                 origin="store", size=int(game.get("size") or 0),
+                                 target_root=job.target)
     job.task = task.id
     task = _follow(job, task.id)
 
@@ -1006,7 +1107,8 @@ def _install_and_record(job: StoreJob, game: dict, settings: dict, folder: Path,
     _change_state(lambda state: state["installed"].__setitem__(game["id"], record))
     if shared is not None and not shared.ours:
         pass                       # the person's own torrent: neither it nor its files are touched
-    elif shared is not None and settings.get("store_keep_seeding"):
+    elif shared is not None and settings.get("store_keep_seeding") \
+            and not getattr(shared.client, "leech_only", False):
         pass                       # left in the torrent client, still being shared
     else:
         if shared is not None:
@@ -1069,10 +1171,13 @@ def _fetch_release(job: StoreJob, game: dict, settings: dict, folder: Path):
     elif method == "direct":
         order = ["direct"]
     else:
-        try:
-            have_client = bool(swarm) and torrent_client(settings) is not None
-        except StoreError:
-            have_client = False
+        if builtin_engine(settings):
+            have_client = bool(swarm)
+        else:
+            try:
+                have_client = bool(swarm) and torrent_client(settings) is not None
+            except StoreError:
+                have_client = False
         order = ["torrent", "direct"] if have_client else ["direct", "torrent"]
     order = [way for way in order if (mirrors if way == "direct" else swarm)]
     if not order:
@@ -1422,13 +1527,27 @@ def _prepare_release(job: StoreJob, target: Path, settings: dict,
 # BitTorrent
 # --------------------------------------------------------------------------
 
-def torrent_client(settings: dict | None = None, look: bool = True):
-    """The torrent client to use: the one set up, or one found running.
+def builtin_engine(settings: dict | None = None) -> bool:
+    """Whether torrents go through the store's own downloader rather than an app."""
+    settings = settings or library.load_settings()
+    return (settings.get("store_torrent_engine", "builtin") != "app"
+            and torrentengine.available())
 
-    Finding one saves it, so the person never has to fill in the settings
-    for a client that is sitting there on its default port.
+
+def torrent_client(settings: dict | None = None, look: bool = True):
+    """The torrent client to use: the built-in one, the app set up, or one found running.
+
+    Finding an app saves it, so the person never has to fill in the
+    settings for a client that is sitting there on its default port.
     """
     settings = settings or library.load_settings()
+    if builtin_engine(settings):
+        if not look:
+            return None
+        try:
+            return torrentengine.ENGINE.get()
+        except torrentengine.EngineError as exc:
+            raise StoreError(str(exc)) from exc
     configured = settings.get("torrent_client") or {}
     client = torrentclient.from_settings(configured)
     if client is not None or not look:
@@ -1439,21 +1558,29 @@ def torrent_client(settings: dict | None = None, look: bool = True):
                                                   "username": "", "password": ""}})
         return torrentclient.from_settings(found)
     if found:
-        raise StoreError(f"{found['label']} is running but wants a password. Put it in the main "
-                         "app's Settings under Torrent client, then press Try again.")
-    raise StoreError("This game is shared over BitTorrent, which needs Transmission or "
-                     "qBittorrent running on this PC with remote access on. In Transmission: "
-                     "Edit → Preferences → Remote → Allow remote access. In "
-                     "qBittorrent: Options → Web UI. Then press Try again.")
+        raise StoreError(f"{found['label']} is running but wants a password. Sign in to it "
+                         "under Settings → BitTorrent, then press Try again.")
+    raise StoreError("This game is shared over BitTorrent. Switch Settings → BitTorrent to the "
+                     "built-in downloader, or start Transmission or qBittorrent with remote "
+                     "access on, then press Try again.")
 
 
 def torrent_info() -> dict:
-    """The client the store would use, for Settings, without probing the network."""
-    client = torrent_client(look=False)
+    """The client the store would use, for Settings, without starting anything."""
+    settings = library.load_settings()
+    engine = "app" if settings.get("store_torrent_engine") == "app" else "builtin"
+    base = {"engine": engine, "builtin_available": torrentengine.available(),
+            "builtin_ready": bool(torrentengine.find())}
+    if builtin_engine(settings):
+        return {**base, "label": "Built-in downloader", "url": ""}
+    client = torrentclient.from_settings(settings.get("torrent_client") or {})
     if client is None:
-        return {"label": "", "url": ""}
-    return {"label": client.label,
-            "url": getattr(client, "base", "") or getattr(client, "endpoint", "")}
+        return {**base, "label": "", "url": ""}
+    configured = settings.get("torrent_client") or {}
+    return {**base, "label": client.label,
+            "url": getattr(client, "base", "") or getattr(client, "endpoint", ""),
+            "username": str(configured.get("username") or ""),
+            "signed_in": bool(configured.get("password"))}
 
 
 def look_for_torrent_client() -> dict:
@@ -1464,12 +1591,35 @@ def look_for_torrent_client() -> dict:
         return {**torrent_info(), "message": f"Found {found['label']} {found['version']}".strip()}
     current = torrent_info()
     if found:
-        return {**current, "message": f"{found['label']} is running but wants a password; "
-                                      "enter it in the main app's Settings."}
+        library.save_settings({"torrent_client": {"kind": found["kind"], "url": found["url"],
+                                                  "username": "", "password": ""}})
+        return {**torrent_info(), "needs_login": True,
+                "message": f"{found['label']} is running but wants its username and password. "
+                           "Press Sign in."}
     if current["label"]:
         return {**current, "message": f"Nothing answered on the usual ports, so the "
-                                      f"{current['label']} set up in Settings stays in use."}
+                                      f"{current['label']} set up before stays in use."}
     return {**current, "message": "No torrent app is running with remote access on."}
+
+
+def torrent_login(username: str, password: str) -> dict:
+    """Save a torrent app's sign-in, typed with the controller, and try it."""
+    settings = library.load_settings()
+    configured = dict(settings.get("torrent_client") or {})
+    if configured.get("kind") not in ("transmission", "qbittorrent"):
+        found = torrentclient.detect()
+        if not found:
+            raise StoreError("No Transmission or qBittorrent is answering on this PC. Start it "
+                             "with remote access on, or use the built-in downloader.")
+        configured = {"kind": found["kind"], "url": found["url"]}
+    configured.update(username=str(username or "")[:200], password=str(password or "")[:200])
+    client = torrentclient.from_settings(configured)
+    try:
+        version = client.version()
+    except torrentclient.TorrentClientError as exc:
+        raise StoreError(str(exc)) from exc
+    library.save_settings({"torrent_client": configured, "store_torrent_engine": "app"})
+    return {**torrent_info(), "message": f"Signed in to {client.label} {version}".strip()}
 
 
 def _speed(rate: int) -> str:
@@ -1558,17 +1708,30 @@ def _choose_files(job: StoreJob, client, info_hash: str, skip) -> list[str]:
     An older client that cannot choose files simply downloads them all;
     that costs disk space, not the game, so it is not an error.
     """
+    unwanted: list = []
     try:
         files = client.files(info_hash)
         if not files:
             return []
         unwanted = [f for f in files if skip(PurePath(f["name"]).name)]
         if not unwanted or len(unwanted) == len(files):
+            unwanted = []
             return []                       # never deselect everything
         client.skip(info_hash, [f["index"] for f in unwanted])
     except torrentclient.TorrentClientError:
-        return []
+        unwanted = []
+    finally:
+        _release_hold(client, info_hash)
     return [f["name"] for f in unwanted]
+
+
+def _release_hold(client, info_hash: str) -> None:
+    starter = getattr(client, "start", None)
+    if starter is not None:
+        try:
+            starter(info_hash)
+        except torrentclient.TorrentClientError:
+            pass
 
 
 def _torrent_download(job: StoreJob, url: str, folder: Path, settings: dict,
@@ -1616,7 +1779,12 @@ def _torrent_download(job: StoreJob, url: str, folder: Path, settings: dict,
     last_progress, last_change = -1.0, time.time()
     details_wait = 0.0
     skipped: list[str] = []
-    chosen = skip is None or not ours    # never change file choices on someone else's torrent
+    # Never change file choices on someone else's torrent. The built-in
+    # downloader holds every new torrent until its files are chosen, so it
+    # always goes through the choosing step, even with nothing to leave out.
+    holds = hasattr(client, "start")
+    chosen = not ours or (skip is None and not holds)
+    skip = skip or (lambda name: False)
 
     def give_up(reason: str) -> None:
         if ours:
@@ -1648,8 +1816,9 @@ def _torrent_download(job: StoreJob, url: str, folder: Path, settings: dict,
         if not chosen and state != "fetching details":
             skipped = _choose_files(job, client, info_hash, skip)
             chosen = True
-            if skipped:
-                continue                    # progress is now counted over what is left
+            continue                        # progress is now counted over what is left
+        if holds and ours and state == "paused":
+            _release_hold(client, info_hash)
 
         if item["progress"] >= 1 and state not in ("checking", "moving", "fetching details"):
             content = item.get("content") or os.path.join(item.get("path", ""), item.get("name", ""))
@@ -2089,10 +2258,16 @@ def refresh_steam(relaunch: bool) -> dict:
     if time.time() - _REFRESHING["at"] < 30:
         return {"started": False, "message": "Steam is already being restarted."}
     _REFRESHING["at"] = time.time()
-    args = ["--steam-refresh"] + (["--relaunch-store"] if relaunch else [])
+    if STREAMING:
+        # Streamed as its own app: the store stays, so nothing needs
+        # reopening, and Steam starts quietly behind it rather than taking
+        # over the screen in the middle of the session.
+        relaunch = False
+    args = (["--steam-refresh"] + (["--relaunch-store"] if relaunch else [])
+            + (["--steam-background"] if STREAMING else []))
     command, cwd = self_command(*args)
     _spawn_detached(command, cwd)
-    leaving = STORE_WINDOW
+    leaving = STORE_WINDOW and not STREAMING
     if leaving:
         def leave() -> None:
             time.sleep(0.8)
@@ -2106,7 +2281,7 @@ def refresh_steam(relaunch: bool) -> dict:
             "message": "Restarting Steam. The new games appear when it is back."}
 
 
-def run_refresh(relaunch: bool) -> int:
+def run_refresh(relaunch: bool, background: bool = False) -> int:
     """The helper: close Steam, write pending shortcuts, open Steam again."""
     log_path = library.config_dir() / "store-refresh.log"
     lines: list[str] = []
@@ -2136,8 +2311,12 @@ def run_refresh(relaunch: bool) -> int:
 
     settings = library.load_settings()
     big_picture = settings.get("store_reopen", "bigpicture") != "library"
-    log("Starting Steam" + (" in Big Picture" if big_picture else ""))
-    opened = steam.open_big_picture() if big_picture else steam.open_steam()
+    if background:
+        log("Starting Steam in the background")
+        opened = steam.open_silently()
+    else:
+        log("Starting Steam" + (" in Big Picture" if big_picture else ""))
+        opened = steam.open_big_picture() if big_picture else steam.open_steam()
     log(opened["message"])
 
     if relaunch:
@@ -2221,6 +2400,7 @@ SETTING_KEYS = {
     "store_reopen": ("bigpicture", "library"),
     "store_glyphs": ("auto", "xbox", "playstation"),
     "store_site_method": ("auto", "direct", "torrent"),
+    "store_torrent_engine": ("builtin", "app"),
 }
 
 
@@ -2248,6 +2428,8 @@ def save_store_settings(payload: dict) -> dict:
         short = key.replace("store_", "")
         if payload.get(short) in allowed:
             patch[key] = payload[short]
+    if "ask_drive" in payload:
+        patch["store_ask_drive"] = bool(payload["ask_drive"])
     if "keep_downloads" in payload:
         patch["store_keep_downloads"] = bool(payload["keep_downloads"])
     if "builtin" in payload:
@@ -2299,9 +2481,12 @@ def overview(force: bool = False) -> dict:
         "settings": store_settings(settings),
         "library_ready": library_ready(settings),
         "library_choices": [] if library_ready(settings) else library_choices(),
+        "library": library_overview(settings),
         "artwork_key": bool(str(settings.get("api_key", "")).strip()),
         "store_shortcut": bool(state.get("store_shortcut_added")),
         "store_window": STORE_WINDOW,
+        "streaming": STREAMING,
+        "sunshine_command": sunshine_command(),
         "platform": platform.system(),
         **status(),
     }

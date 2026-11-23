@@ -94,6 +94,17 @@
       </div>
 
       <div class="group">
+        <h2 class="group__title">Moonlight and Sunshine</h2>
+        <p class="group__lede" id="streamState"></p>
+        <p class="label">Command for a “Game Store” app in Sunshine</p>
+        <p class="command" id="sunshineCommand"></p>
+        <p class="line__sub">In Sunshine's web page: Applications → Add new, any name, this as the
+          Command, and leave Detached Commands empty. Leaving the store then ends that stream, so you
+          can start your Steam app in Moonlight straight after. Quitting the app from Moonlight closes
+          the store too.</p>
+      </div>
+
+      <div class="group">
         <h2 class="group__title">Controller</h2>
         <p class="group__lede">Button icons follow the controller in your hand. Choose one here if Steam
           Input or the stream makes a PlayStation pad look like an Xbox one, or the other way round.</p>
@@ -108,14 +119,22 @@
       <div class="group">
         <h2 class="group__title">Installing</h2>
         <div id="libraryPick"></div>
-        <div class="line">
-          <div>
-            <p class="line__title">BitTorrent</p>
-            <p class="line__sub" id="torrentState"></p>
-          </div>
-          <button class="btn nav" id="torrentLook" type="button">Look for it</button>
+        <p class="label">BitTorrent</p>
+        <div class="segmented" id="optTorrentEngine">
+          <button class="seg nav" type="button" data-value="builtin">Built-in downloader</button>
+          <button class="seg nav" type="button" data-value="app">My torrent app</button>
         </div>
         <div class="line">
+          <div>
+            <p class="line__title" id="torrentTitle">BitTorrent</p>
+            <p class="line__sub" id="torrentState"></p>
+          </div>
+          <div class="line__buttons">
+            <button class="btn nav" id="torrentLogin" type="button">Sign in</button>
+            <button class="btn nav" id="torrentLook" type="button">Look for it</button>
+          </div>
+        </div>
+        <div class="line" id="seedLine">
           <div>
             <p class="line__title">Keep sharing after installing</p>
             <p class="line__sub">Off: a torrent leaves the torrent app as soon as its game is installed.</p>
@@ -191,7 +210,10 @@
           <p id="catalogueResultText"></p>
           <button class="btn btn--primary nav" id="catalogueAdd" type="button">Add it</button>
         </div>
-        <button class="btn btn--quiet nav" id="catalogueRefresh" type="button">Refresh all catalogues</button>
+        <div class="line__buttons">
+          <button class="btn btn--quiet nav" id="catalogueRefresh" type="button">Check for new games</button>
+          <button class="btn btn--quiet nav" id="catalogueRescan" type="button">Read everything again</button>
+        </div>
       </div>
 
       <div class="group">

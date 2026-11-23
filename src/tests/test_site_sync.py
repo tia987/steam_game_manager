@@ -213,6 +213,20 @@ class SiteSyncTests(unittest.TestCase):
         store.save_store_settings({"catalogues": []})
         self.assertFalse(sitesync.has_state(self.cid))
 
+    def test_reading_everything_again_refreshes_and_drops_what_is_gone(self):
+        self.run_sync(sitesync.ALL_PAGES)
+        BLOG.posts[80] = dict(BLOG.posts[80], title="Game Number 15 – v9.9")   # deep in the site
+        removed = BLOG.posts.pop(50)
+        sitesync.rescan(self.cid, self.source)
+        shown_meanwhile = len(self.state()["games"])
+        self.run_sync(sitesync.ALL_PAGES, force=True)
+        games = self.state()["games"]
+        self.assertEqual(shown_meanwhile, 95)                 # the shelf stayed while it read
+        self.assertEqual(next(g for g in games if g["name"] == "Game Number 15")["version"], "v9.9")
+        self.assertFalse(any(g["page"].rstrip("/").endswith(removed["slug"]) for g in games))
+        self.assertEqual(len(games), 94)
+        self.assertFalse(self.state()["rescan"])
+
     def test_page_depth_setting(self):
         self.assertEqual(store._site_pages({}), store.SITE_PAGES_DEFAULT)
         self.assertEqual(store._site_pages({"store_site_pages": 0}), sitesync.ALL_PAGES)

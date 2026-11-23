@@ -32,10 +32,15 @@ def main() -> int:
                         help="open straight into the full-screen store, for a controller")
     parser.add_argument("--windowed", action="store_true",
                         help="with --store, use a normal window instead of full screen")
+    parser.add_argument("--streaming", action="store_true",
+                        help="with --store: the store is its own Moonlight/Sunshine app, so "
+                             "leaving it ends the stream")
     parser.add_argument("--version", action="version", version=f"nsgm {__version__}")
     # Run by the store as a separate process: close Steam, write the
     # shortcuts that were waiting, start Steam again.
     parser.add_argument("--steam-refresh", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--steam-background", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--parent-pid", type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument("--relaunch-store", action="store_true", help=argparse.SUPPRESS)
     # Passed by the elevated copy to itself, so declining or failing the
     # prompt can never turn into a loop of relaunches.
@@ -44,7 +49,18 @@ def main() -> int:
 
     if args.steam_refresh:
         # No window, no server: this outlives the store and Steam both.
-        return store.run_refresh(relaunch=args.relaunch_store)
+        return store.run_refresh(relaunch=args.relaunch_store, background=args.steam_background)
+
+    streaming = bool(args.store and (args.streaming or store.started_by_sunshine()))
+    store.STREAMING = streaming
+    if args.parent_pid:
+        # The elevated copy of a streamed store: it ends when its starter does.
+        def gone() -> None:
+            try:
+                embed.MANAGER.release_all()
+            finally:
+                os._exit(0)
+        winproc.exit_with_parent(args.parent_pid, gone)
 
     # Installers that ask for administrator rights can only be held inside
     # the app's window when the app has them too. With the setting on, the
@@ -55,7 +71,10 @@ def main() -> int:
             wanted = library.load_settings().get("run_as_admin")
         except Exception:
             wanted = False
-        if wanted and winproc.relaunch_elevated(["--no-elevate"]):
+        extra = ["--no-elevate"]
+        if streaming:
+            extra += ["--streaming", f"--parent-pid={os.getpid()}"]
+        if wanted and winproc.relaunch_elevated(extra, wait=streaming):
             return 0
 
     # Clear away the copy the last update left behind. It cannot be

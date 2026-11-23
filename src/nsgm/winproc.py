@@ -87,6 +87,8 @@ if IS_WINDOWS:
     _shell32.IsUserAnAdmin.argtypes = []
     _shell32.IsUserAnAdmin.restype = wintypes.BOOL
 
+    _kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    _kernel32.WaitForSingleObject.restype = wintypes.DWORD
     _kernel32.GetProcessId.argtypes = [wintypes.HANDLE]
     _kernel32.GetProcessId.restype = wintypes.DWORD
     _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -370,7 +372,39 @@ class ProcessTree:
 # restarting with administrator rights
 # --------------------------------------------------------------------------
 
-def relaunch_elevated(extra: list | None = None) -> bool:
+_SYNCHRONIZE = 0x00100000
+_INFINITE = 0xFFFFFFFF
+
+
+def exit_with_parent(pid: int, on_exit) -> None:
+    """Call ``on_exit`` as soon as process ``pid`` ends; a background watch.
+
+    The elevated copy of the store is not a child of the program Sunshine
+    started, so quitting from Moonlight - which ends that program - would
+    leave it running. It watches its starter instead and goes with it.
+    """
+    def watch() -> None:
+        if IS_WINDOWS:
+            handle = _kernel32.OpenProcess(_SYNCHRONIZE, False, int(pid))
+            if not handle:
+                return                      # already gone, or not ours to watch
+            try:
+                _kernel32.WaitForSingleObject(handle, _INFINITE)
+            finally:
+                _kernel32.CloseHandle(handle)
+        else:
+            while True:
+                try:
+                    os.kill(int(pid), 0)
+                except OSError:
+                    break
+                time.sleep(2)
+        on_exit()
+
+    threading.Thread(target=watch, daemon=True, name="parent-watch").start()
+
+
+def relaunch_elevated(extra: list | None = None, wait: bool = False) -> bool:
     """Start a second copy of this program with administrator rights.
 
     Returns True if it started, so the caller can exit. A source run is
@@ -393,5 +427,17 @@ def relaunch_elevated(extra: list | None = None) -> bool:
         bootstrap = (f"import sys; sys.path.insert(0, {package_root!r}); "
                      "from nsgm.__main__ import main; sys.exit(main())")
         params = subprocess.list2cmdline(["-c", bootstrap] + args)
-    result = _shell32.ShellExecuteW(None, "runas", program, params, os.getcwd(), 1)
-    return int(result or 0) > 32
+    if not wait:
+        result = _shell32.ShellExecuteW(None, "runas", program, params, os.getcwd(), 1)
+        return int(result or 0) > 32
+    # Stay alive for as long as the elevated copy runs, so whatever started
+    # this one (Sunshine, for a Moonlight session) still sees the program
+    # running, and sees it end when the store is left.
+    try:
+        launched = launch(program, params, cwd=os.getcwd(), elevate=True)
+    except LaunchError:
+        return False
+    if launched.handle:
+        _kernel32.WaitForSingleObject(launched.handle, _INFINITE)
+        _kernel32.CloseHandle(launched.handle)
+    return True

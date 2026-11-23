@@ -1247,7 +1247,8 @@ class Handler(BaseHTTPRequestHandler):
         """The store's actions. Errors are raised and answered by do_POST."""
         gid = str(payload.get("id", ""))
         if path == "/api/store/install":
-            return json_response(self, {"job": store.install(gid).to_json()})
+            target = str(payload.get("target", ""))
+            return json_response(self, {"job": store.install(gid, target).to_json()})
         if path == "/api/store/cancel":
             store.cancel(gid)
             return json_response(self, store.status())
@@ -1266,9 +1267,18 @@ class Handler(BaseHTTPRequestHandler):
             return json_response(self, store.test_source(str(payload.get("source", ""))))
         if path == "/api/store/refresh":
             return json_response(self, store.overview(force=True))
+        if path == "/api/store/refresh-everything":
+            return json_response(self, store.refresh_everything())
         if path == "/api/store/library":
-            store.set_library(str(payload.get("path", "")))
-            return json_response(self, store.overview())
+            action = str(payload.get("action", "") or "add")
+            if action == "add" and not payload.get("keep_view"):
+                store.set_library(str(payload.get("path", "")))
+                return json_response(self, store.overview())
+            return json_response(self, {"library": store.change_library(
+                action, str(payload.get("path", "")))})
+        if path == "/api/store/torrent-login":
+            return json_response(self, store.torrent_login(str(payload.get("username", "")),
+                                                           str(payload.get("password", ""))))
         if path == "/api/store/steam":
             if payload.get("when_idle"):
                 return json_response(self, store.restart_when_idle(bool(payload.get("relaunch"))))

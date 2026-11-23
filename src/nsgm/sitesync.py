@@ -50,7 +50,8 @@ def _path(cid: str) -> Path:
 
 def _blank(source: str) -> dict:
     return {"source": source, "name": "", "games": [], "next": "", "pages_read": 0,
-            "total_pages": 0, "complete": False, "checked": 0.0, "error": ""}
+            "total_pages": 0, "complete": False, "checked": 0.0, "error": "",
+            "rescan": False, "seen": []}
 
 
 def has_state(cid: str) -> bool:
@@ -117,6 +118,21 @@ def seed(cid: str, source: str, name: str, games: list) -> None:
     state = _blank(source)
     state.update(name=name, games=list(games))
     save(cid, state)
+
+
+def rescan(cid: str, source: str) -> None:
+    """Read the whole site again from the front page, as far as the depth goes.
+
+    The shelf stays as it is meanwhile; each release read is refreshed in
+    place. Once every page has been read, releases the site no longer has
+    are taken off the shelf.
+    """
+    with _LOCK:
+        state = load(cid, source)
+        if not has_state(cid):
+            return
+        state.update(pages_read=0, next="", complete=False, rescan=True, seen=[], error="")
+        save(cid, state)
 
 
 def due(state: dict, limit: int) -> bool:
@@ -250,6 +266,8 @@ def _read_older(cid: str, source: str, state: dict, limit: int, make_game,
         state["complete"] = True
         return
     by_page, by_id = _index(state["games"])
+    again = bool(state.get("rescan"))
+    seen = set(state.get("seen") or [])
     since_save = 0
     while url and (limit == ALL_PAGES or state["pages_read"] < limit):
         if len(state["games"]) >= MAX_GAMES:
@@ -266,9 +284,17 @@ def _read_older(cid: str, source: str, state: dict, limit: int, make_game,
             game = make_game(post)
             if not game:
                 continue
-            if _key(game["page"]) in by_page:
+            key = _key(game["page"])
+            if again:
+                seen.add(key)
+                if key in by_page:
+                    state["games"][by_page[key]] = game     # read again: refreshed in place
+                    continue
+            if key in by_page:
                 continue
             if game["id"] in by_id:
+                if again:
+                    seen.add(_key(state["games"][by_id[game["id"]]].get("page", "")))
                 continue                       # an older post of a game already shelved
             by_page[_key(game["page"])] = by_id[game["id"]] = len(state["games"])
             state["games"].append(game)
@@ -284,10 +310,17 @@ def _read_older(cid: str, source: str, state: dict, limit: int, make_game,
         since_save += 1
         if since_save >= SAVE_EVERY:
             state["checked"] = time.time()
+            if again:
+                state["seen"] = sorted(seen)
             save(cid, state)
             since_save = 0
         if url:
             time.sleep(PAGE_DELAY)
+    if again:
+        if state.get("complete") and seen:
+            # The whole site was read: what it no longer lists goes.
+            state["games"] = [g for g in state["games"] if _key(g.get("page", "")) in seen]
+        state["rescan"], state["seen"] = False, []
 
 
 def _status(cid: str, **values) -> None:

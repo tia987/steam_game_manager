@@ -1135,6 +1135,10 @@ class Handler(BaseHTTPRequestHandler):
                 embed.MANAGER.bring_back()
                 return json_response(self, {"embed": embed.MANAGER.current()})
 
+            if path == "/api/embed/remote":
+                return json_response(self, embed.MANAGER.remote(
+                    str(payload.get("action", "")), str(payload.get("text", ""))))
+
             if path == "/api/embed/front":
                 embed.MANAGER.front()
                 return json_response(self, {"ok": True})

@@ -596,30 +596,59 @@ def retry(gid: str) -> StoreJob:
     return install(gid)
 
 
+def _pick_from_release(game: dict, release: dict) -> str:
+    """The game's own file in one GitHub release, or ""."""
+    assets = release.get("assets") or []
+    if game.get("asset"):
+        pattern = re.compile(game["asset"], re.I)
+        assets = [a for a in assets if pattern.search(a.get("name", ""))]
+        best = catalog.choose_asset(assets)
+        if not best:
+            # The catalogue's pattern is trusted over the platform guess,
+            # but never over "this is a patch, not the game".
+            allowed = [a for a in assets if not catalog.NOT_THE_GAME.search(a.get("name", ""))]
+            allowed.sort(key=lambda a: -(a.get("size") or 0))
+            best = {"url": allowed[0].get("browser_download_url", "")} if allowed else None
+    else:
+        best = catalog.choose_asset(assets)
+    return (best or {}).get("url", "")
+
+
 def _resolve_download(game: dict, settings: dict) -> tuple[str, str]:
-    """(url, version) for the file that suits this computer."""
+    """(url, version) of the full game's file for this computer."""
     direct = platform_download(game)
     if direct and not game.get("repo"):
         return direct, ""
     token = str(settings.get("github_token", "")).strip()
-    if game.get("asset"):
-        # A pattern from the catalogue: pick among the files it allows.
-        payload, _remaining = catalog._request(
-            f"{catalog.API}/repos/{game['repo']}/releases/latest", token)
-        pattern = re.compile(game["asset"], re.I)
-        assets = [a for a in payload.get("assets") or [] if pattern.search(a.get("name", ""))]
-        best = catalog.choose_asset(assets)
-        if not best and assets:
-            best = {"url": assets[0].get("browser_download_url", "")}
-        if best and best.get("url"):
-            return best["url"], payload.get("tag_name") or ""
-    else:
+    if not game.get("asset"):
         found = catalog.resolve(game, library.config_dir(), token=token)
         if found.get("asset") and found["asset"].get("url"):
             return found["asset"]["url"], found.get("version", "")
+    # Either the catalogue narrows the choice, or the newest release has
+    # nothing that is the game - a point release that ships only a patch
+    # is common. Walk back through recent releases to the newest full one.
+    releases, _remaining = catalog._request(
+        f"{catalog.API}/repos/{game['repo']}/releases?per_page=10", token)
+    for release in releases if isinstance(releases, list) else []:
+        if release.get("draft") or release.get("prerelease"):
+            continue
+        url = _pick_from_release(game, release)
+        if url:
+            return url, release.get("tag_name") or ""
     if direct:
         return direct, ""
-    raise StoreError("The latest release has no file for this computer.")
+    raise StoreError("None of the recent releases has a full game for this computer, only "
+                     "patches, add-ons or builds for other systems.")
+
+
+def _not_the_game(name: str) -> str:
+    """Why a downloaded file is not something to install as a game, or ""."""
+    found = catalog.NOT_THE_GAME.search(name)
+    if not found:
+        return ""
+    word = found.group(1).lower()
+    return (f"The download is named “{name}”: it looks like a {word}, not the game "
+            "itself, so it was not installed. The catalogue entry needs a link to the full game.")
 
 
 def _run_job(job: StoreJob, game: dict) -> None:
@@ -657,9 +686,18 @@ def _install_steps(job: StoreJob, game: dict) -> None:
         job.message = (f"{mb:,.0f} MB of {total / 1048576:,.0f} MB" if total
                        else f"{mb:,.0f} MB")
 
+    # A direct link names its file before anything is fetched, and a server
+    # may still rename it on the way; both are checked.
+    problem = _not_the_game(Path(urllib.parse.urlparse(url).path).name)
+    if problem:
+        raise StoreError(problem)
     result = download.download(url, folder, progress=progress)
     if job.cancel:
         raise Stopped()
+    problem = _not_the_game(result["name"])
+    if problem:
+        _tidy(Path(result["path"]), folder, {"store_keep_downloads": False})
+        raise StoreError(problem)
 
     job.phase, job.progress, job.message = "installing", -1.0, "Waiting its turn"
     task = autoinstall.QUEUE.add(result["path"], name=game["name"], mode="quiet",
@@ -1030,6 +1068,7 @@ def add_store_to_steam() -> dict:
 SETTING_KEYS = {
     "store_restart": ("exit", "now"),
     "store_reopen": ("bigpicture", "library"),
+    "store_glyphs": ("auto", "xbox", "playstation"),
 }
 
 
@@ -1038,6 +1077,7 @@ def store_settings(settings: dict | None = None) -> dict:
     return {
         "restart": settings.get("store_restart", "exit"),
         "reopen": settings.get("store_reopen", "bigpicture"),
+        "glyphs": settings.get("store_glyphs", "auto"),
         "keep_downloads": bool(settings.get("store_keep_downloads")),
         "catalogues": clean_catalogue_list(settings.get("store_catalogues")),
     }

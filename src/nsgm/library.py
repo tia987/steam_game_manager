@@ -65,6 +65,7 @@ DEFAULT_SETTINGS: dict = {
     "store_catalogues": [],      # [{"id", "source", "name", "enabled"}], added by the user
     "store_restart": "exit",     # exit: offer a Steam restart on leaving; now: as soon as idle
     "store_reopen": "bigpicture",    # what Steam opens into after that restart
+    "store_glyphs": "auto",      # button icons: auto (from the controller), xbox, playstation
     "store_keep_downloads": False,
     "store_download_folder": "",
 }

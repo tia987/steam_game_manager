@@ -165,6 +165,7 @@ function applyOverview(data) {
   S.byId = new Map(S.games.map((g) => [g.id, g]));
   if (S.catalogue !== "all" && !data.catalogues.some((c) => c.id === S.catalogue)) S.catalogue = "all";
   applyStatus(data, true);
+  paintGlyphs();
   renderChips();
   renderNotices();
   renderGrid();
@@ -769,7 +770,8 @@ function renderPending() {
 
 function renderSettings() {
   const settings = S.data.settings;
-  for (const [id, value] of [["optRestart", settings.restart], ["optReopen", settings.reopen]]) {
+  for (const [id, value] of [["optRestart", settings.restart], ["optReopen", settings.reopen],
+                             ["optGlyphs", settings.glyphs || "auto"]]) {
     for (const seg of $(id).querySelectorAll(".seg")) seg.classList.toggle("is-on", seg.dataset.value === value);
   }
   $("optKeep").setAttribute("aria-checked", settings.keep_downloads ? "true" : "false");
@@ -950,6 +952,15 @@ function renderInstaller(session) {
     $("installerNote").textContent = session.reason || notes[session.state] || "";
   }
   syncEmbed();
+  // Once the installer's window is held and showing, say what is selected
+  // in it, so the controller has something to start from.
+  const remoteKey = installerRemote() ? session.id : "";
+  if (remoteKey !== S.remoteKey) {
+    S.remoteKey = remoteKey;
+    updateHints();
+    if (remoteKey) setTimeout(() => { if (installerRemote()) sendRemote("describe"); }, 300);
+    else $("installerFocus").textContent = "";
+  }
 }
 
 function syncEmbed() {
@@ -972,7 +983,7 @@ function syncEmbed() {
 
 const KB_ROWS = ["1234567890", "qwertyuiop", "asdfghjkl:", "zxcvbnm./-"];
 const KB_SHIFT = { 1: "!", 2: "@", 3: "#", 4: "$", 5: "%", 6: "&", 7: "*", 8: "(", 9: ")", 0: "=",
-                   ":": ";", ".": "?", "/": "~", "-": "_" };
+                   ":": ";", ".": "?", "/": "\\", "-": "_" };
 const KB = { value: "", shift: false, onInput: null, onDone: null, returnTo: null, built: false };
 
 function buildKeyboard() {
@@ -993,16 +1004,16 @@ function buildKeyboard() {
   const wide = make("div", "kb__row kb__row--wide");
   const actions = [
     ["Shift", "kb:shift", () => { KB.shift = !KB.shift; paintKeys(); }, ""],
-    ["Space", "kb:space", () => kbType(" "), "Y"],
-    ["Delete", "kb:del", kbBackspace, "X"],
+    ["Space", "kb:space", () => kbType(" "), "y"],
+    ["Delete", "kb:del", kbBackspace, "x"],
     ["Clear", "kb:clear", () => kbSet(""), ""],
-    ["Done", "kb:done", kbDone, "☰"],
+    ["Done", "kb:done", kbDone, "menu"],
   ];
-  for (const [label, keyName, run, glyph] of actions) {
+  for (const [label, keyName, run, button] of actions) {
     const key = make("button", `key key--action nav${keyName === "kb:done" ? " key--done" : ""}`);
     key.type = "button";
     key.dataset.key = keyName;
-    if (glyph) key.append(make("span", `glyph glyph--${glyph === "☰" ? "menu" : glyph.toLowerCase()}`, glyph));
+    if (button) key.append(glyph(button));
     key.append(document.createTextNode(label));
     key.addEventListener("click", run);
     wide.append(key);
@@ -1265,8 +1276,12 @@ function activate(node) {
   node.click();
 }
 
+const STICK = { sup: "up", sdown: "down", sleft: "left", sright: "right" };
+
 function act(name) {
   setInput("pad");
+  if (installerRemote()) { remoteAct(name); return; }
+  name = STICK[name] || name;
   const keyboard = !$("keyboard").hidden;
   switch (name) {
     case "up": case "down": case "left": case "right":
@@ -1319,6 +1334,13 @@ document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") { event.preventDefault(); kbDone(); return; }
   }
 
+  if (installerRemote()) {
+    const keys = { Tab: event.shiftKey ? "prev" : "next", ArrowUp: "up", ArrowDown: "down",
+                   ArrowLeft: "left", ArrowRight: "right", Enter: "enter", " ": "press" };
+    if (keys[event.key]) { event.preventDefault(); setInput("pad"); sendRemote(keys[event.key]); return; }
+    if (event.key === "Escape") { event.preventDefault(); back(); return; }
+  }
+
   switch (event.key) {
     case "ArrowUp": event.preventDefault(); act("up"); return;
     case "ArrowDown": event.preventDefault(); act("down"); return;
@@ -1358,16 +1380,31 @@ document.addEventListener("mousemove", (event) => {
 
 // Gamepads -------------------------------------------------------------------
 
-const PAD = { previous: {}, repeatAt: {}, connected: false };
-const REPEATS = new Set(["up", "down", "left", "right", "x"]);
+const PAD = { previous: {}, repeatAt: {}, connected: false, detected: "xbox" };
+const REPEATS = new Set(["up", "down", "left", "right", "sup", "sdown", "sleft", "sright", "x"]);
+const PAD_BUTTONS = ["a", "b", "x", "y", "lb", "rb", "view", "menu",
+                     "up", "down", "left", "right", "sup", "sdown", "sleft", "sright"];
+
+// What a controller is, from the name the browser reports. Sony's USB
+// vendor id is 054c: DualShock 4 pads are 05c4, 09cc and 0ba0, DualSense
+// 0ce6 and the Edge 0df2. Sunshine's emulated DualShock 4 reports the
+// same, so a PlayStation pad over Moonlight is recognised too.
+function padFamily(id) {
+  const text = (id || "").toLowerCase();
+  if (/0ce6|0df2|dualsense/.test(text)) return "ps5";
+  if (/054c|dualshock|playstation|wireless controller/.test(text)) return "ps4";
+  return "xbox";
+}
 
 function readPads() {
   const state = {};
+  let active = null;
   const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
   for (const pad of pads) {
     const pressed = (index) => !!(pad.buttons[index] && pad.buttons[index].pressed);
     const x = pad.axes[0] || 0;
     const y = pad.axes[1] || 0;
+    if (pad.buttons.some((b) => b && b.pressed) || Math.abs(x) > 0.55 || Math.abs(y) > 0.55) active = pad;
     state.a = state.a || pressed(0);
     state.b = state.b || pressed(1);
     state.x = state.x || pressed(2);
@@ -1376,19 +1413,32 @@ function readPads() {
     state.rb = state.rb || pressed(5);
     state.view = state.view || pressed(8);
     state.menu = state.menu || pressed(9);
-    state.up = state.up || pressed(12) || y < -0.55;
-    state.down = state.down || pressed(13) || y > 0.55;
-    state.left = state.left || pressed(14) || x < -0.55;
-    state.right = state.right || pressed(15) || x > 0.55;
+    state.up = state.up || pressed(12);
+    state.down = state.down || pressed(13);
+    state.left = state.left || pressed(14);
+    state.right = state.right || pressed(15);
+    // The left stick is kept apart from the d-pad: in the store it moves the
+    // same way, but inside an installer it scrolls lists instead.
+    state.sup = state.sup || y < -0.55;
+    state.sdown = state.sdown || y > 0.55;
+    state.sleft = state.sleft || x < -0.55;
+    state.sright = state.sright || x > 0.55;
     state.scroll = Math.abs(pad.axes[3] || 0) > 0.25 ? pad.axes[3] : (state.scroll || 0);
   }
-  return { state, count: pads.length };
+  return { state, count: pads.length, active };
 }
 
 function padLoop(now) {
-  const { state, count } = readPads();
+  const { state, count, active } = readPads();
+  if (active) {
+    const family = padFamily(active.id);
+    if (family !== PAD.detected) {
+      PAD.detected = family;
+      paintGlyphs();
+    }
+  }
   if (count) {
-    for (const name of ["a", "b", "x", "y", "lb", "rb", "view", "menu", "up", "down", "left", "right"]) {
+    for (const name of PAD_BUTTONS) {
       const down = !!state[name];
       const was = !!PAD.previous[name];
       if (down && !was) {
@@ -1396,7 +1446,7 @@ function padLoop(now) {
         PAD.repeatAt[name] = now + 380;
       } else if (down && REPEATS.has(name) && now >= (PAD.repeatAt[name] || 0)) {
         act(name);
-        PAD.repeatAt[name] = now + 85;
+        PAD.repeatAt[name] = now + (name.startsWith("s") && installerRemote() ? 160 : 85);
       }
     }
     if (state.scroll) {
@@ -1409,33 +1459,162 @@ function padLoop(now) {
   requestAnimationFrame(padLoop);
 }
 
-window.addEventListener("gamepadconnected", () => {
+window.addEventListener("gamepadconnected", (event) => {
   setInput("pad");
-  if (!PAD.connected) toast("Controller connected");
+  PAD.detected = padFamily(event.gamepad && event.gamepad.id);
+  paintGlyphs();
+  if (!PAD.connected) {
+    toast(PAD.detected === "xbox" ? "Controller connected" : "PlayStation controller connected");
+  }
   PAD.connected = true;
 });
 
-// ------------------------------------------------------------------ hints
+// ------------------------------------------------------------------ an installer, by controller
 
-const GLYPHS = { a: ["A", "a"], b: ["B", "b"], x: ["X", "x"], y: ["Y", "y"], menu: ["☰", "menu"], view: ["⧉", "view"] };
+function installerRemote() {
+  return !!(S.embed && !$("installer").hidden && S.embed.state === "embedded" && !S.embed.popped &&
+            $("dialog").hidden && $("keyboard").hidden);
+}
+
+// The d-pad moves between the installer's controls (Tab and Shift+Tab, the
+// way every Windows wizard is built to be used without a mouse); the stick
+// works lists; A presses or ticks; Menu is Enter, which is Next or Install.
+const REMOTE_MAP = { up: "prev", down: "next", lb: "prev", rb: "next", left: "left", right: "right",
+                     sup: "up", sdown: "down", sleft: "left", sright: "right",
+                     a: "press", menu: "enter" };
+let remoteChain = Promise.resolve(null);
+
+function remoteAct(name) {
+  if (name === "b") { back(); return; }
+  if (name === "view") { $("installerPop").click(); return; }
+  if (name === "x") { remoteType(); return; }
+  const action = REMOTE_MAP[name];
+  if (action) sendRemote(action);
+}
+
+function sendRemote(action, text = "") {
+  remoteChain = remoteChain.then(async () => {
+    try {
+      const result = await api("/api/embed/remote", { action, text });
+      showRemoteFocus(result);
+      return result;
+    } catch (error) {
+      showRemoteFocus({ ok: false, error: error.message });
+      return null;
+    }
+  });
+  return remoteChain;
+}
+
+function showRemoteFocus(result) {
+  const line = $("installerFocus");
+  line.classList.toggle("is-warn", !result.ok);
+  if (!result.ok) { line.textContent = result.error; return; }
+  const focus = result.focus;
+  if (!focus) { line.textContent = "Press the d-pad to pick something in the installer."; return; }
+  const what = {
+    button: "Button",
+    checkbox: focus.checked ? "Ticked" : "Not ticked",
+    radio: focus.checked ? "Chosen" : "Option",
+    edit: "Text box",
+    list: "List",
+    choice: "Choice",
+  }[focus.kind] || "Selected";
+  const label = focus.label || (focus.kind === "edit" ? "(empty)" : "");
+  line.textContent = label ? `${what}: ${label}` : what;
+  if (focus.kind === "edit") {
+    const tip = make("span", "installer__tip");
+    tip.append(glyph("x"), document.createTextNode("to type"));
+    line.append(tip);
+  }
+}
+
+async function remoteType() {
+  const result = await sendRemote("describe");
+  const focus = result && result.ok ? result.focus : null;
+  if (!focus || focus.kind !== "edit") {
+    toast("Pick a text box in the installer with the d-pad first, then press X.", "bad");
+    return;
+  }
+  openKeyboard({
+    label: "Type into the installer",
+    value: focus.label,
+    onInput: null,
+    onDone: (value) => {
+      sendRemote("type", value);
+      focusFirst();
+    },
+  });
+}
+
+// ------------------------------------------------------------------ button icons
+
+const SHAPES = {
+  cross: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.6 5.6l8.8 8.8M14.4 5.6l-8.8 8.8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>',
+  circle: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="5.3" fill="none" stroke="currentColor" stroke-width="2.4"/></svg>',
+  square: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="5.3" y="5.3" width="9.4" height="9.4" rx="0.6" fill="none" stroke="currentColor" stroke-width="2.4"/></svg>',
+  triangle: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4.8l5.6 9.8H4.4z" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linejoin="round"/></svg>',
+  dpad: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7.6 2.8h4.8v4.8h4.8v4.8h-4.8v4.8H7.6v-4.8H2.8V7.6h4.8z" fill="currentColor"/></svg>',
+};
+
+const GLYPH_SETS = {
+  xbox: { a: "A", b: "B", x: "X", y: "Y", lb: "LB", rb: "RB", menu: "☰", view: "⧉", ls: "LS",
+          dpad: SHAPES.dpad },
+  ps: { a: SHAPES.cross, b: SHAPES.circle, x: SHAPES.square, y: SHAPES.triangle, lb: "L1", rb: "R1",
+        menu: "OPTIONS", view: "CREATE", ls: "L", dpad: SHAPES.dpad },
+};
+
+function padStyle() {
+  const chosen = S.data && S.data.settings ? S.data.settings.glyphs : "auto";
+  if (chosen === "xbox") return "xbox";
+  if (chosen === "playstation") return PAD.detected === "ps4" ? "ps4" : "ps5";
+  return PAD.detected;
+}
+
+function fillGlyph(node) {
+  const button = node.dataset.btn;
+  const style = padStyle();
+  const family = style === "xbox" ? "xbox" : "ps";
+  let content = GLYPH_SETS[family][button] || button.toUpperCase();
+  if (family === "ps" && button === "view") content = style === "ps4" ? "SHARE" : "CREATE";
+  node.className = `glyph glyph--${family} glyph--${family}-${button}`;
+  if (content.startsWith("<svg")) node.innerHTML = content;
+  else node.textContent = content;
+}
+
+function glyph(button) {
+  const node = make("span");
+  node.dataset.btn = button;
+  node.setAttribute("aria-hidden", "true");
+  fillGlyph(node);
+  return node;
+}
+
+function paintGlyphs() {
+  for (const node of document.querySelectorAll(".glyph[data-btn]")) fillGlyph(node);
+}
+
+// ------------------------------------------------------------------ hints
 
 function updateHints() {
   const root = scopeRoot();
   let hints;
   if (root === $("dialog")) hints = [["a", "Choose"], ["b", "Cancel"]];
   else if (root === $("keyboard")) hints = [["a", "Type"], ["x", "Delete"], ["y", "Space"], ["menu", "Done"]];
-  else if (root === $("installer")) hints = [["a", "Select"], ["b", "Hide"]];
-  else if (root === $("detail")) hints = [["a", "Select"], ["b", "Back"]];
+  else if (root === $("installer")) {
+    hints = installerRemote()
+      ? [["dpad", "Move"], ["a", "Press"], ["menu", "Next / OK"], ["x", "Type"], ["ls", "Lists"], ["b", "Hide"]]
+      : [["a", "Select"], ["b", "Hide"]];
+  } else if (root === $("detail")) hints = [["a", "Select"], ["b", "Back"]];
   else {
     hints = [["a", S.tab === "discover" ? "Open" : "Select"], ["x", "Search"], ["y", "Downloads"],
              ["menu", "Settings"], ["b", S.tab === "discover" ? "Leave" : "Back"]];
   }
   const box = $("hints");
   box.innerHTML = "";
-  for (const [glyph, label] of hints) {
-    const [text, kind] = GLYPHS[glyph];
+  for (const [button, label] of hints) {
     const hint = make("span", "hint");
-    hint.append(make("span", `glyph glyph--${kind}`, text), document.createTextNode(label));
+    hint.append(glyph(button), document.createTextNode(label));
     box.append(hint);
   }
 }
@@ -1453,11 +1632,12 @@ function wire() {
   $("pendingChip").addEventListener("click", () => restartFlow(true));
   $("libraryRestart").addEventListener("click", () => restartFlow(true));
 
-  for (const [id, field] of [["optRestart", "restart"], ["optReopen", "reopen"]]) {
+  for (const [id, field] of [["optRestart", "restart"], ["optReopen", "reopen"], ["optGlyphs", "glyphs"]]) {
     for (const seg of $(id).querySelectorAll(".seg")) {
       seg.dataset.key = `${id}:${seg.dataset.value}`;
       seg.addEventListener("click", async () => {
         await saveSettings({ [field]: seg.dataset.value });
+        if (field === "glyphs") paintGlyphs();
         if (field === "restart" && seg.dataset.value === "now") {
           toast("Steam will restart by itself once installs finish.");
         }

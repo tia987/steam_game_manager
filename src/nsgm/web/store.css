@@ -152,16 +152,42 @@ body[data-input="pad"] { cursor: none; }
   font-size: 0.72rem;
   font-weight: 800;
   font-family: var(--body);
+  line-height: 1;
   color: var(--ink);
   background: var(--dim);
   flex: none;
 }
-.glyph--bumper { border-radius: 0.35rem; min-width: 2.1rem; background: var(--rule); color: var(--dim); }
-.glyph--a { background: #7bd86b; }
-.glyph--b { background: #ff7b72; }
-.glyph--x { background: #6aa8ff; }
-.glyph--y { background: #ffd35c; }
-.glyph--menu, .glyph--view { background: var(--rule); color: var(--paper); border-radius: 0.35rem; }
+.glyph svg { width: 1.05rem; height: 1.05rem; display: block; }
+
+/* Xbox: coloured letters */
+.glyph--xbox-a { background: #7bd86b; }
+.glyph--xbox-b { background: #ff7b72; }
+.glyph--xbox-x { background: #6aa8ff; }
+.glyph--xbox-y { background: #ffd35c; }
+
+/* PlayStation: the four shapes in their colours on a dark button */
+.glyph--ps-a, .glyph--ps-b, .glyph--ps-x, .glyph--ps-y {
+  padding: 0;
+  width: 1.5rem;
+  background: #2c2639;
+  box-shadow: inset 0 0 0 0.08rem #4a4160;
+}
+.glyph--ps-a { color: #8ab4ff; }
+.glyph--ps-b { color: #ff6f86; }
+.glyph--ps-x { color: #f59ad6; }
+.glyph--ps-y { color: #4fd6a8; }
+
+/* bumpers, menu buttons, sticks and the d-pad are plain keys */
+.glyph--xbox-lb, .glyph--xbox-rb, .glyph--ps-lb, .glyph--ps-rb {
+  border-radius: 0.35rem; min-width: 2.1rem; background: var(--rule); color: var(--dim);
+}
+.glyph--xbox-menu, .glyph--xbox-view, .glyph--xbox-ls, .glyph--xbox-dpad,
+.glyph--ps-menu, .glyph--ps-view, .glyph--ps-ls, .glyph--ps-dpad {
+  border-radius: 0.35rem; background: var(--rule); color: var(--paper);
+}
+.glyph--ps-menu, .glyph--ps-view { font-size: 0.56rem; letter-spacing: 0.06em; padding: 0 0.45rem; }
+.glyph--xbox-dpad, .glyph--ps-dpad { padding: 0 0.2rem; }
+.glyph--xbox-dpad svg, .glyph--ps-dpad svg { width: 1.1rem; height: 1.1rem; }
 body[data-input="mouse"] .glyph { visibility: hidden; }
 
 /* ------------------------------------------------------------- toolbar */
@@ -516,7 +542,7 @@ body[data-input="mouse"] .btn:hover:not(:disabled) { filter: brightness(1.12); }
 
 .hints {
   position: relative;
-  z-index: 18;          /* stays visible over a game's page */
+  z-index: 26;          /* stays visible over a game's page and a held installer */
   display: flex; justify-content: flex-end; gap: 1.8rem;
   padding: 0.9rem var(--pad-x) 1.2rem;
   color: var(--dim);
@@ -647,6 +673,8 @@ body[data-input="mouse"] .hints { visibility: hidden; }
 .key:focus-visible, body[data-input="pad"] .key:focus { box-shadow: var(--focus); color: var(--paper); transform: scale(1.06); }
 .key--done:focus-visible, body[data-input="pad"] .key--done:focus { color: var(--ink); }
 .key .glyph { min-width: 1.2rem; height: 1.2rem; font-size: 0.6rem; }
+.key .glyph--ps-x, .key .glyph--ps-y { width: 1.2rem; }
+.key .glyph svg { width: 0.85rem; height: 0.85rem; }
 
 /* questions */
 .sheet--dialog { place-items: center; z-index: 40; }
@@ -664,11 +692,20 @@ body[data-input="mouse"] .hints { visibility: hidden; }
 .dialog .btn { justify-content: flex-start; padding: 0.85rem 1.4rem; border-radius: var(--radius); }
 
 /* an installer's window */
-.sheet--installer { z-index: 25; padding: 2.4rem var(--pad-x); }
+.sheet--installer { z-index: 25; padding: 2.4rem var(--pad-x) 5.4rem; }
 .installer { display: grid; grid-template-rows: auto 1fr; gap: 1rem; min-height: 0; }
 .installer__head { display: flex; justify-content: space-between; align-items: center; gap: 1.5rem; }
 .installer__title { margin: 0; font-family: var(--display); font-weight: 800; font-size: 1.5rem; }
 .installer__sub { margin: 0.2rem 0 0; color: var(--dim); }
+.installer__focus {
+  margin: 0.5rem 0 0;
+  min-height: 1.45em;
+  font-weight: 600;
+  color: var(--ready);
+}
+.installer__focus.is-warn { color: var(--warn); }
+.installer__tip { display: inline-flex; align-items: center; gap: 0.4rem; margin-left: 1rem;
+  color: var(--dim); font-weight: 500; vertical-align: middle; }
 .installer__stage {
   min-height: 0;
   border-radius: var(--radius);

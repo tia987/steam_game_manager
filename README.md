@@ -521,17 +521,23 @@ mouse.
 
 ### Controls
 
-| Button | Does |
-| --- | --- |
-| D-pad, left stick | move |
-| A | open, press |
-| B | back; on Discover, leave the store |
-| X | search, with an on-screen keyboard |
-| Y | Downloads |
-| LB / RB | previous / next tab |
-| Menu (☰) | Settings |
-| View (⧉) | leave the store |
-| Right stick | scroll |
+| Xbox | PlayStation | Does |
+| --- | --- | --- |
+| D-pad, left stick | D-pad, left stick | move |
+| A | ✕ | open, press |
+| B | ○ | back; on Discover, leave the store |
+| X | □ | search, with an on-screen keyboard |
+| Y | △ | Downloads |
+| LB / RB | L1 / R1 | previous / next tab |
+| Menu (☰) | Options | Settings |
+| View (⧉) | Share / Create | leave the store |
+| Right stick | Right stick | scroll |
+
+The button icons follow the controller in use: a DualShock 4 or
+DualSense (including Sunshine's emulated one) gets ✕ ○ □ △, anything
+else gets Xbox letters. If Steam Input or the stream makes a PlayStation
+pad report itself as an Xbox one, pick the icons in Settings →
+Controller.
 
 Moonlight's virtual controller, an Xbox or PlayStation pad, and Steam
 Input all work. If Steam Input maps the controller to keys instead,
@@ -562,9 +568,44 @@ none of this is needed.
 
 The first install asks which drive games go on and makes a `Games`
 folder there; after that the library folders from the **Installs** tab
-are used, with the same SSD and free-space rules. Installers run quietly
-where their maker is known. Anything else shows its own screens inside
-the store, which works with the mouse over Moonlight. Downloads go to
+are used, with the same SSD and free-space rules.
+
+Installers run quietly, straight into the library folder, whenever
+their maker is recognised: Inno Setup, NSIS, Windows Installer,
+InstallShield, WiX and Advanced Installer, which between them cover
+nearly every game installer. Running quietly means passing the
+installer the switches its maker defined for it, and an installer of
+unknown make has no such switches to pass, so it is never guessed at.
+
+Those show their own screens, held inside the store, and the controller
+works them the way a keyboard would:
+
+| Xbox | PlayStation | In the installer |
+| --- | --- | --- |
+| D-pad ↑ ↓ | D-pad ↑ ↓ | previous / next control (Shift+Tab / Tab) |
+| D-pad ← → | D-pad ← → | arrow keys |
+| Left stick | Left stick | move inside a list, such as a list of options to tick |
+| A | ✕ | press the selected button, tick the selected box (Space) |
+| Menu | Options | the default button: Next, Install, Finish (Enter) |
+| X | □ | type into the selected text box, such as the install folder |
+| B | ○ | hide the installer; it keeps running |
+| View | Share / Create | pop it out into its own window |
+
+What is selected is written above the installer in large type, since an
+installer's own focus outline is hard to see on a television. Typing
+replaces the text box's contents, and on the keyboard Shift + `/` gives
+`\`. This needs the installer to be held in the store, which in turn
+needs the app to have the same rights as the installer: if an installer
+asks for administrator rights, turn on *Start with administrator rights*
+in the main app's Settings.
+
+**Only the game.** Releases often carry more than the game: patches and
+updates that only apply on top of an install, hotfixes, DLC, soundtracks,
+demos, language packs, editors. None of those are ever chosen. When the
+newest release holds nothing but a patch, the store goes back to the
+newest release that has the full game, and pre-releases are skipped. A
+catalogue's direct link that points at one of those is refused before
+anything is installed, with the reason shown. Downloads go to
 `Downloads/Game Store downloads` and are deleted once installed, unless
 *Keep downloaded files* is on. An interrupted download carries on where
 it stopped.
@@ -635,7 +676,8 @@ Install and it goes into your library, then onto the Add games shelf.
 
 **Choosing the file** is fussier than it sounds, because release pages
 carry a lot that is not the game. The picker refuses source archives,
-checksums, signatures, debug symbols, dedicated server builds, and
+checksums, signatures, debug symbols, dedicated server builds, patches,
+updates, hotfixes, DLC, soundtracks, demos, language packs, and
 anything built for a different processor — an ARM64 installer is never
 handed to an x64 machine. Where a release contains nothing usable, the
 card links to the release page instead of guessing.

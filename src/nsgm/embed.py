@@ -80,6 +80,55 @@ if IS_WINDOWS:
     _ShowWindow = _bind("ShowWindow", [wintypes.HWND, ctypes.c_int], wintypes.BOOL)
     _SetForegroundWindow = _bind("SetForegroundWindow", [wintypes.HWND], wintypes.BOOL)
 
+    # -- driving a held installer from a controller ---------------------------
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _GetCurrentThreadId = _kernel32.GetCurrentThreadId
+    _GetCurrentThreadId.argtypes = []
+    _GetCurrentThreadId.restype = wintypes.DWORD
+
+    class _GUITHREADINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD),
+                    ("hwndActive", wintypes.HWND), ("hwndFocus", wintypes.HWND),
+                    ("hwndCapture", wintypes.HWND), ("hwndMenuOwner", wintypes.HWND),
+                    ("hwndMoveSize", wintypes.HWND), ("hwndCaret", wintypes.HWND),
+                    ("rcCaret", wintypes.RECT)]
+
+    _ULONG_PTR = ctypes.c_size_t
+
+    class _KEYBDINPUT(ctypes.Structure):
+        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
+                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+                    ("dwExtraInfo", _ULONG_PTR)]
+
+    class _MOUSEINPUT(ctypes.Structure):
+        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG), ("mouseData", wintypes.DWORD),
+                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+                    ("dwExtraInfo", _ULONG_PTR)]
+
+    class _HARDWAREINPUT(ctypes.Structure):
+        _fields_ = [("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD),
+                    ("wParamH", wintypes.WORD)]
+
+    class _INPUTUNION(ctypes.Union):
+        _fields_ = [("mi", _MOUSEINPUT), ("ki", _KEYBDINPUT), ("hi", _HARDWAREINPUT)]
+
+    class _INPUT(ctypes.Structure):
+        _fields_ = [("type", wintypes.DWORD), ("u", _INPUTUNION)]
+
+    _GetGUIThreadInfo = _bind("GetGUIThreadInfo",
+                              [wintypes.DWORD, ctypes.POINTER(_GUITHREADINFO)], wintypes.BOOL)
+    _AttachThreadInput = _bind("AttachThreadInput",
+                               [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL], wintypes.BOOL)
+    _SetFocus = _bind("SetFocus", [wintypes.HWND], wintypes.HWND)
+    _IsChild = _bind("IsChild", [wintypes.HWND, wintypes.HWND], wintypes.BOOL)
+    _IsWindowEnabled = _bind("IsWindowEnabled", [wintypes.HWND], wintypes.BOOL)
+    _SendInput = _bind("SendInput", [wintypes.UINT, ctypes.POINTER(_INPUT), ctypes.c_int],
+                       wintypes.UINT)
+    _SendMessageTimeoutW = _bind("SendMessageTimeoutW",
+                                 [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+                                  wintypes.UINT, wintypes.UINT, ctypes.POINTER(_ULONG_PTR)],
+                                 wintypes.LPARAM)
+
     if hasattr(_user32, "GetWindowLongPtrW"):
         _GetLong = _bind("GetWindowLongPtrW", [wintypes.HWND, ctypes.c_int], ctypes.c_ssize_t)
         _SetLong = _bind("SetWindowLongPtrW", [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t],
@@ -100,6 +149,30 @@ SWP_FRAMECHANGED, SWP_SHOWWINDOW, SWP_HIDEWINDOW = 0x20, 0x40, 0x80
 SWP_ASYNCWINDOWPOS = 0x4000
 SW_HIDE, SW_SHOWNA, SW_RESTORE = 0, 8, 9
 GW_OWNER = 4
+
+INPUT_KEYBOARD = 1
+KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE = 0x1, 0x2, 0x4
+VK_TAB, VK_RETURN, VK_SHIFT, VK_ESCAPE, VK_SPACE = 0x09, 0x0D, 0x10, 0x1B, 0x20
+VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN = 0x25, 0x26, 0x27, 0x28
+WM_SETTEXT, WM_GETTEXT, BM_GETCHECK = 0x000C, 0x000D, 0x00F0
+SMTO_ABORTIFHUNG = 0x0002
+
+# What each controller action presses: (modifier, key). These are the keys
+# every Windows wizard already answers to, whoever made it: Tab moves
+# between controls, Space presses a button or ticks a box, Enter is the
+# default button (Next, Install, Finish), arrows move inside lists.
+REMOTE_KEYS = {
+    "next": (0, VK_TAB),
+    "prev": (VK_SHIFT, VK_TAB),
+    "left": (0, VK_LEFT),
+    "right": (0, VK_RIGHT),
+    "up": (0, VK_UP),
+    "down": (0, VK_DOWN),
+    "press": (0, VK_SPACE),
+    "enter": (0, VK_RETURN),
+    "escape": (0, VK_ESCAPE),
+}
+EXTENDED_KEYS = {VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN}
 GA_PARENT = 1
 ERROR_ACCESS_DENIED = 5
 
@@ -194,6 +267,7 @@ class Session:
         self.we_hid: set[int] = set()
         self.placed: dict[int, tuple] = {}
         self.started = time.time()
+        self.last_focus = 0           # the installer control the controller last selected
 
     def to_json(self) -> dict:
         return {"id": self.id, "title": self.title, "kind": self.kind, "task": self.task_id,
@@ -464,6 +538,169 @@ class Manager:
                 if _IsIconic(hwnd):
                     _ShowWindow(hwnd, SW_RESTORE)
                 _SetForegroundWindow(hwnd)
+
+
+    # -- the controller ---------------------------------------------------------
+
+    def remote(self, action: str, text: str = "") -> dict:
+        """Work the held installer's screens: press keys, fill in a field.
+
+        Keystrokes are real input, sent with SendInput, so modifiers and
+        dialog navigation behave exactly as on a keyboard. That needs the
+        installer to hold the keyboard focus, which is possible because a
+        window adopted from another program shares its input with ours.
+        """
+        if not IS_WINDOWS:
+            return {"ok": False, "error": "Installers only run on Windows."}
+        with self.lock:
+            session = self.session
+            hwnd = session.active if session else 0
+            if not session or not hwnd or hwnd not in session.held or not _IsWindow(hwnd):
+                return {"ok": False, "error": "No installer is held in the app right now."}
+            if not self.visible:
+                return {"ok": False, "error": "The installer is hidden."}
+            if action == "describe":
+                focus = self._focus_in(hwnd)
+                if focus:
+                    session.last_focus = focus
+                return {"ok": True, "focus": self._describe(focus) if focus else None}
+            if action == "type":
+                return self._type_text(session, hwnd, text)
+            keys = REMOTE_KEYS.get(action)
+            if not keys:
+                return {"ok": False, "error": f"Unknown action {action!r}."}
+            focus = self._take_focus(session, hwnd)
+            if not focus:
+                return {"ok": False, "error": "The installer would not take the keyboard."}
+            self._press(*keys)
+        time.sleep(0.08)                    # let it move its focus before reading it
+        with self.lock:
+            focus = self._focus_in(hwnd)
+            if focus:
+                session.last_focus = focus
+            return {"ok": True, "focus": self._describe(focus) if focus else None}
+
+    @staticmethod
+    def _focus_in(hwnd) -> int:
+        """The installer's focused control, if the focus is inside it."""
+        thread = _GetWindowThreadProcessId(hwnd, None)
+        info = _GUITHREADINFO()
+        info.cbSize = ctypes.sizeof(_GUITHREADINFO)
+        if not _GetGUIThreadInfo(thread, ctypes.byref(info)):
+            return 0
+        focus = int(info.hwndFocus or 0)
+        if focus and (focus == hwnd or _IsChild(hwnd, focus)):
+            return focus
+        return 0
+
+    def _take_focus(self, session: Session, hwnd) -> int:
+        focus = self._focus_in(hwnd)
+        if focus:
+            return focus
+        thread = _GetWindowThreadProcessId(hwnd, None)
+        me = _GetCurrentThreadId()
+        attached = bool(_AttachThreadInput(me, thread, True))
+        try:
+            if self.host:
+                _SetForegroundWindow(self.host)
+            last = session.last_focus
+            target = last if last and _IsWindow(last) and _IsChild(hwnd, last) else hwnd
+            # Focusing the installer's own window hands the focus on to the
+            # control it last had, as dialogs and Delphi forms both do.
+            _SetFocus(target)
+        finally:
+            if attached:
+                _AttachThreadInput(me, thread, False)
+        time.sleep(0.03)
+        return self._focus_in(hwnd)
+
+    @staticmethod
+    def _key(vk: int, up: bool = False, char: int = 0) -> "_INPUT":
+        event = _INPUT()
+        event.type = INPUT_KEYBOARD
+        if char:
+            event.u.ki = _KEYBDINPUT(0, char, KEYEVENTF_UNICODE | (KEYEVENTF_KEYUP if up else 0), 0, 0)
+        else:
+            flags = (KEYEVENTF_EXTENDEDKEY if vk in EXTENDED_KEYS else 0) | (KEYEVENTF_KEYUP if up else 0)
+            event.u.ki = _KEYBDINPUT(vk, 0, flags, 0, 0)
+        return event
+
+    def _press(self, modifier: int, vk: int) -> None:
+        events = []
+        if modifier:
+            events.append(self._key(modifier))
+        events += [self._key(vk), self._key(vk, up=True)]
+        if modifier:
+            events.append(self._key(modifier, up=True))
+        array = (_INPUT * len(events))(*events)
+        _SendInput(len(events), array, ctypes.sizeof(_INPUT))
+
+    @staticmethod
+    def _message(hwnd, msg: int, wparam: int = 0, lparam: int = 0) -> int:
+        result = _ULONG_PTR(0)
+        if not _SendMessageTimeoutW(hwnd, msg, wparam, lparam, SMTO_ABORTIFHUNG, 500,
+                                    ctypes.byref(result)):
+            return -1
+        return int(result.value)
+
+    def _control_text(self, hwnd) -> str:
+        buffer = ctypes.create_unicode_buffer(1024)
+        if self._message(hwnd, WM_GETTEXT, 1024, ctypes.addressof(buffer)) < 0:
+            return ""
+        return buffer.value
+
+    def _describe(self, hwnd) -> dict:
+        """What the selected control is, for the store to say out loud."""
+        name = _class(hwnd).lower()
+        style = _GetLong(hwnd, GWL_STYLE) & 0xFFFFFFFF
+        text = self._control_text(hwnd)
+        if "edit" in name:
+            kind = "edit"
+        elif "listbox" in name or "listview" in name or "tree" in name:
+            kind = "list"
+        elif "combo" in name:
+            kind = "choice"
+        elif "check" in name:
+            kind = "checkbox"
+        elif "radio" in name:
+            kind = "radio"
+        elif "button" in name:
+            kind = {2: "checkbox", 3: "checkbox", 5: "checkbox", 6: "checkbox",
+                    4: "radio", 9: "radio"}.get(style & 0xF, "button")
+        else:
+            kind = "other"
+        label = text if kind == "edit" else text.replace("&&", "\0").replace("&", "").replace("\0", "&")
+        checked = None
+        if kind in ("checkbox", "radio"):
+            checked = self._message(hwnd, BM_GETCHECK) == 1
+        return {"kind": kind, "label": label.strip()[:200], "checked": checked,
+                "enabled": bool(_IsWindowEnabled(hwnd))}
+
+    def _type_text(self, session: Session, hwnd, text: str) -> dict:
+        target = session.last_focus
+        if not (target and _IsWindow(target) and _IsChild(hwnd, target)):
+            target = self._focus_in(hwnd)
+        if not target:
+            return {"ok": False, "error": "Select a text box in the installer first."}
+        if "edit" in _class(target).lower():
+            # Setting the text outright replaces what was there, and the
+            # control tells its installer it changed, as typing would.
+            buffer = ctypes.create_unicode_buffer(text[:1000])
+            if self._message(target, WM_SETTEXT, 0, ctypes.addressof(buffer)) < 0:
+                return {"ok": False, "error": "The installer did not answer."}
+        else:
+            if not self._take_focus(session, hwnd):
+                return {"ok": False, "error": "The installer would not take the keyboard."}
+            events = []
+            for ch in text[:1000]:
+                code = ord(ch)
+                if code > 0xFFFF:
+                    continue
+                events += [self._key(0, char=code), self._key(0, up=True, char=code)]
+            if events:
+                array = (_INPUT * len(events))(*events)
+                _SendInput(len(events), array, ctypes.sizeof(_INPUT))
+        return {"ok": True, "focus": self._describe(target)}
 
 
 MANAGER = Manager()

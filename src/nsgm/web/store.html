@@ -19,12 +19,12 @@
     </div>
 
     <nav class="tabs" aria-label="Sections">
-      <span class="glyph glyph--bumper" aria-hidden="true">LB</span>
+      <span class="glyph" data-btn="lb" aria-hidden="true"></span>
       <button class="tab nav" type="button" data-tab="discover">Discover</button>
       <button class="tab nav" type="button" data-tab="library">Library</button>
       <button class="tab nav" type="button" data-tab="downloads">Downloads<span class="tab__count" id="downloadCount" hidden></span></button>
       <button class="tab nav" type="button" data-tab="settings">Settings</button>
-      <span class="glyph glyph--bumper" aria-hidden="true">RB</span>
+      <span class="glyph" data-btn="rb" aria-hidden="true"></span>
     </nav>
 
     <div class="top__right">
@@ -40,7 +40,7 @@
         <button class="search nav" id="searchBox" type="button">
           <span class="search__icon" aria-hidden="true"></span>
           <span class="search__text" id="searchText">Search games</span>
-          <span class="glyph glyph--x" aria-hidden="true">X</span>
+          <span class="glyph" data-btn="x" aria-hidden="true"></span>
         </button>
         <div class="chips" id="chips" role="toolbar" aria-label="Filter"></div>
       </div>
@@ -90,6 +90,18 @@
             <p class="line__sub" id="selfState">Adds a “Game Store” tile, so it can be opened from Big Picture.</p>
           </div>
           <button class="btn nav" id="addSelf" type="button">Add to Steam</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <h2 class="group__title">Controller</h2>
+        <p class="group__lede">Button icons follow the controller in your hand. Choose one here if Steam
+          Input or the stream makes a PlayStation pad look like an Xbox one, or the other way round.</p>
+        <p class="label">Button icons</p>
+        <div class="segmented" id="optGlyphs">
+          <button class="seg nav" type="button" data-value="auto">Automatic</button>
+          <button class="seg nav" type="button" data-value="xbox">Xbox</button>
+          <button class="seg nav" type="button" data-value="playstation">PlayStation</button>
         </div>
       </div>
 
@@ -180,6 +192,7 @@
       <div>
         <p class="installer__title" id="installerTitle"></p>
         <p class="installer__sub" id="installerSub"></p>
+        <p class="installer__focus" id="installerFocus" aria-live="polite"></p>
       </div>
       <div class="actions">
         <button class="btn nav" id="installerPop" type="button">Pop out</button>

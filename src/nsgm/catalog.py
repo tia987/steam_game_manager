@@ -201,6 +201,15 @@ NOT_A_PACKAGE = re.compile(
 )
 SOURCE_LIKE = re.compile(r"(?i)(source|-src|_src|symbols|debug|dbg|pdb|sdk|headers)")
 SERVER_LIKE = re.compile(r"(?i)(server|dedicated|headless)")
+# Files that sit beside a game in a release but are not the game: patches
+# and updates (which only work on top of an install that is already
+# there), add-ons, soundtracks, demos, tools. Matched as whole words, so
+# "Patchwork" or "ghost" are not caught by "patch" and "ost".
+NOT_THE_GAME = re.compile(
+    r"(?i)(?<![a-z])(update[sr]?|upgrade|patch(es)?|hotfix(es)?|delta|incremental|"
+    r"dlc|add-?ons?|expansion|soundtrack|ost|artbook|wallpapers?|manual|"
+    r"lang(uage)?-?packs?|translations?|demo|editor|mod-?(tools|kit|sdk))(?![a-z])"
+)
 
 PLATFORM_HINTS = {
     "Windows": (re.compile(r"(?i)(windows|win64|win32|-win|_win|\bwin\b|\.msi$|\.exe$)"),
@@ -228,6 +237,8 @@ def host_arch() -> str:
 def score_asset(name: str, system: str) -> int:
     """Rank one release file for this computer. Negative means unusable."""
     if NOT_A_PACKAGE.search(name):
+        return -100
+    if NOT_THE_GAME.search(name):
         return -100
     wanted, unwanted = PLATFORM_HINTS.get(system, PLATFORM_HINTS["Windows"])
     if unwanted.search(name):
@@ -291,7 +302,9 @@ def choose_asset(assets: list[dict], system: str = "") -> dict | None:
             ranked.append((value, asset))
     if not ranked:
         return None
-    ranked.sort(key=lambda pair: -pair[0])
+    # Between equally good files the larger one wins: a full game is bigger
+    # than anything that merely travels with it.
+    ranked.sort(key=lambda pair: (-pair[0], -(pair[1].get("size") or 0)))
     best = ranked[0][1]
     return {
         "name": best.get("name", ""),

@@ -119,7 +119,7 @@ jobs:
         shell: bash
         working-directory: ${{ steps.locate.outputs.root }}
         run: |
-          python -c "import nsgm, nsgm.server, nsgm.resolve, nsgm.steam, nsgm.autoinstall, nsgm.embed, nsgm.winproc, nsgm.drives, nsgm.installers, nsgm.placement, nsgm.storeinfo, nsgm.torrentclient, nsgm.tools; print('imports fine')"
+          python -c "import nsgm, nsgm.server, nsgm.resolve, nsgm.steam, nsgm.autoinstall, nsgm.embed, nsgm.winproc, nsgm.drives, nsgm.installers, nsgm.placement, nsgm.storeinfo, nsgm.torrentclient, nsgm.tools, nsgm.store; print('imports fine')"
           python -c "
           from nsgm import vdf, steam
           entry = steam.build_shortcut('Test', '/tmp/game.exe')
@@ -157,6 +157,16 @@ jobs:
           tree.close()
           assert winproc.split_command('MsiExec.exe /X{1}') == ('MsiExec.exe', '/X{1}')
           print('process tree fine:', sorted(seen))
+          "
+          # The store drives held installers with SendInput, which silently
+          # does nothing if its structures are the wrong size.
+          python -c "
+          import ctypes
+          from nsgm import embed
+          assert ctypes.sizeof(embed._INPUT) == (40 if ctypes.sizeof(ctypes.c_void_p) == 8 else 28), ctypes.sizeof(embed._INPUT)
+          assert ctypes.sizeof(embed._GUITHREADINFO) == (72 if ctypes.sizeof(ctypes.c_void_p) == 8 else 48)
+          print('remote:', embed.MANAGER.remote('next'))
+          print('store input structures fine')
           "
 
       - name: Build
@@ -281,3 +291,6 @@ jobs:
         with:
           files: release/*
           generate_release_notes: true
+          # A tag with a suffix, such as v1.2.0-store.1, is a test build: a
+          # pre-release, which the app's update check never offers.
+          prerelease: ${{ contains(github.ref_name, '-') }}

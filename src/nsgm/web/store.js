@@ -400,7 +400,8 @@ async function openDetail(id) {
   $("detailTitle").textContent = game.name;
   const meta = $("detailMeta");
   meta.innerHTML = "";
-  for (const part of [...(game.tags || []), game.licence, game.catalogue_name]) {
+  for (const part of [...(game.tags || []), game.version, game.extras, game.licence, game.company,
+                     game.catalogue_name]) {
     if (part) meta.append(make("span", "", part));
   }
   $("detailBlurb").textContent = game.blurb || "";
@@ -466,8 +467,9 @@ function renderDetailState() {
     progress.firstChild.style.width = known ? `${Math.round(state.progress * 100)}%` : "";
   }
   const status = $("detailStatus");
-  status.textContent = state.message || (state.kind === "available" && game.size
-    ? `About ${human(game.size)}.` : "");
+  status.textContent = state.message || (state.kind !== "available" ? ""
+    : game.download_size && game.size ? `${human(game.download_size)} to download, about ${human(game.size)} installed.`
+    : game.size ? `About ${human(game.size)}.` : "");
   status.className = "detail__status" + (
     state.kind === "installed" && !state.warn ? " is-good"
     : state.kind === "pending" ? " is-pending"
@@ -814,10 +816,13 @@ function renderPending() {
 function renderSettings() {
   const settings = S.data.settings;
   for (const [id, value] of [["optRestart", settings.restart], ["optReopen", settings.reopen],
-                             ["optGlyphs", settings.glyphs || "auto"]]) {
+                             ["optGlyphs", settings.glyphs || "auto"],
+                             ["optSiteMethod", settings.site_method || "auto"],
+                             ["optSitePages", String(settings.site_pages || 5)]]) {
     for (const seg of $(id).querySelectorAll(".seg")) seg.classList.toggle("is-on", seg.dataset.value === value);
   }
   $("optKeep").setAttribute("aria-checked", settings.keep_downloads ? "true" : "false");
+  $("optOptional").setAttribute("aria-checked", settings.optional_files ? "true" : "false");
   $("optSeed").setAttribute("aria-checked", settings.keep_seeding ? "true" : "false");
   const torrent = settings.torrent || {};
   $("torrentState").textContent = torrent.label
@@ -923,7 +928,9 @@ async function checkCatalogue() {
     const text = $("catalogueResultText");
     text.innerHTML = "";
     text.append(make("strong", "", found.name || "Untitled catalogue"),
-      document.createTextNode(` · ${plural(found.count, "game", "games")}, such as ${found.sample.join(", ")}`
+      document.createTextNode(` · ${plural(found.count, "game", "games")}`
+        + (found.kind === "site" ? ` from ${plural(found.pages || 1, "page", "pages")} of the site` : "")
+        + `, such as ${found.sample.join(", ")}`
         + (found.skipped ? `. ${found.skipped} entries could not be used.` : ".")));
     $("catalogueAdd").hidden = false;
     focusOn($("catalogueAdd"));
@@ -1688,7 +1695,8 @@ function wire() {
   $("pendingChip").addEventListener("click", () => restartFlow(true));
   $("libraryRestart").addEventListener("click", () => restartFlow(true));
 
-  for (const [id, field] of [["optRestart", "restart"], ["optReopen", "reopen"], ["optGlyphs", "glyphs"]]) {
+  for (const [id, field] of [["optRestart", "restart"], ["optReopen", "reopen"], ["optGlyphs", "glyphs"],
+                             ["optSiteMethod", "site_method"]]) {
     for (const seg of $(id).querySelectorAll(".seg")) {
       seg.dataset.key = `${id}:${seg.dataset.value}`;
       seg.addEventListener("click", async () => {
@@ -1716,6 +1724,16 @@ function wire() {
       $("torrentLook").disabled = false;
     }
   });
+  for (const seg of $("optSitePages").querySelectorAll(".seg")) {
+    seg.dataset.key = `optSitePages:${seg.dataset.value}`;
+    seg.addEventListener("click", async () => {
+      if (await saveSettings({ site_pages: Number(seg.dataset.value) })) {
+        toast("Release websites are read again at the next refresh.");
+      }
+    });
+  }
+  $("optOptional").dataset.key = "optOptional";
+  $("optOptional").addEventListener("click", () => saveSettings({ optional_files: !S.data.settings.optional_files }));
   $("optKeep").dataset.key = "optKeep";
   $("optKeep").addEventListener("click", () => saveSettings({ keep_downloads: !S.data.settings.keep_downloads }));
   $("addSelf").dataset.key = "addSelf";

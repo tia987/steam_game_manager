@@ -74,6 +74,13 @@ def safe_name(url: str, disposition: str = "") -> str:
     return name[:150]
 
 
+def clean_file_name(name: str) -> str:
+    """A file name given by someone else, made safe to create here."""
+    name = (name or "").replace("\\", "/").split("/")[-1]
+    name = UNSAFE_CHARS.sub("_", name).strip(". ")
+    return name[:150] if name and name not in (".", "..") else "download.bin"
+
+
 def resolve_target(folder: str | Path, name: str) -> Path:
     """Place the file inside the folder, never outside it."""
     base = Path(folder).expanduser()
@@ -104,17 +111,29 @@ def unique_path(target: Path) -> Path:
 HTML_SIGNS = (b"<!doctype html", b"<html", b"<head", b"<?xml")
 
 
-def download(url: str, folder: str | Path, progress=None, timeout: int = 60) -> dict:
-    """Stream a file to disk, resuming a partial download where possible."""
+def download(url: str, folder: str | Path, progress=None, timeout: int = 60,
+             name: str = "", headers: dict | None = None) -> dict:
+    """Stream a file to disk, resuming a partial download where possible.
+
+    ``name`` fixes the file's name instead of taking it from the address or
+    the server. File hosts hand out a different address on every visit, so
+    without it an interrupted download could never be found again to
+    resume, and the volumes of a split archive would not keep the names
+    they need to open. A named file replaces one of the same name.
+    ``headers`` are sent as well, for hosts that want their cookies back.
+    """
     if not url.lower().startswith(("http://", "https://")):
         raise DownloadError("Only http and https links can be downloaded.")
 
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    sent = {"User-Agent": USER_AGENT}
+    sent.update(headers or {})
+    request = urllib.request.Request(url, headers=sent)
     partial = 0
     temp: Path | None = None
+    fixed = clean_file_name(name) if name else ""
 
     # A .part file from an interrupted attempt can be continued.
-    probe_name = safe_name(url)
+    probe_name = fixed or safe_name(url)
     probe_temp = Path(folder).expanduser() / (probe_name + ".part")
     if probe_temp.exists():
         partial = probe_temp.stat().st_size
@@ -145,14 +164,14 @@ def download(url: str, folder: str | Path, progress=None, timeout: int = 60) -> 
             partial = 0
             temp = None
 
-        name = safe_name(url, response.headers.get("Content-Disposition", ""))
+        name = fixed or safe_name(url, response.headers.get("Content-Disposition", ""))
         total = int(response.headers.get("Content-Length") or 0) + partial
 
+        target = resolve_target(folder, name)
+        if not fixed:
+            target = unique_path(target)
         if temp is None:
-            target = unique_path(resolve_target(folder, name))
             temp = target.with_name(target.name + ".part")
-        else:
-            target = unique_path(resolve_target(folder, name))
 
         digest = hashlib.sha256()
         done = partial

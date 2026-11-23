@@ -122,6 +122,21 @@
           </div>
           <button class="toggle nav" id="optSeed" type="button" role="switch" aria-checked="false"><span></span></button>
         </div>
+        <p class="label">Games from release websites</p>
+        <div class="segmented" id="optSiteMethod">
+          <button class="seg nav" type="button" data-value="auto">Best available</button>
+          <button class="seg nav" type="button" data-value="direct">Direct downloads</button>
+          <button class="seg nav" type="button" data-value="torrent">BitTorrent</button>
+        </div>
+        <p class="line__sub">Best available uses BitTorrent when a torrent app is running, and the
+          site's mirrors otherwise, one after another until one works.</p>
+        <div class="line">
+          <div>
+            <p class="line__title">Download optional files</p>
+            <p class="line__sub">Off: extras a release marks optional, such as soundtracks, are skipped.</p>
+          </div>
+          <button class="toggle nav" id="optOptional" type="button" role="switch" aria-checked="false"><span></span></button>
+        </div>
         <div class="line">
           <div>
             <p class="line__title">Keep downloaded files</p>
@@ -133,9 +148,17 @@
 
       <div class="group">
         <h2 class="group__title">Catalogues</h2>
-        <p class="group__lede">A catalogue is a list of games in a JSON file, on the web or on this computer.
-          The README describes the format.</p>
+        <p class="group__lede">A catalogue is a list of games in a JSON file, on the web or on this computer,
+          or a website that posts one release per page with its download links. The README has the details.</p>
         <div class="rows rows--tight" id="catalogueRows"></div>
+
+        <p class="label">Pages to read from a release website</p>
+        <div class="segmented" id="optSitePages">
+          <button class="seg nav" type="button" data-value="1">1</button>
+          <button class="seg nav" type="button" data-value="5">5</button>
+          <button class="seg nav" type="button" data-value="20">20</button>
+          <button class="seg nav" type="button" data-value="50">50</button>
+        </div>
 
         <p class="label">Add a catalogue</p>
         <div class="adder">

@@ -40,6 +40,13 @@ A bare list of games is accepted too. ``repo`` means "the latest GitHub
 release, picking the file that suits this computer"; ``asset`` narrows
 that pick with a regular expression when a project publishes several
 builds. ``downloads`` (or a single ``download``) are direct links.
+
+A catalogue can also be a website that publishes one blog post per
+release (see ``sitecatalog``). Its address goes in the same box; each
+post that offers downloads becomes a game, and installing one reads the
+post again for its current mirrors and magnet links. A release split
+over many files is fetched file by file, from whichever mirror answers,
+and unpacked before it is installed.
 """
 
 from __future__ import annotations
@@ -61,8 +68,9 @@ import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from . import (archive, autoinstall, catalog, download, drives, installers, library, proc,
-               scanners, sgdb, steam, torrentclient, torrents, uninstall)
+from . import (archive, autoinstall, catalog, download, drives, hosters, installers, library,
+               pipeline, proc, scanners, sgdb, sitecatalog, steam, tools, torrentclient,
+               torrents, uninstall)
 
 USER_AGENT = "NonSteamGameManager/1.0 (+store)"
 
@@ -353,17 +361,127 @@ def fetch_source(source: str) -> bytes:
     return blob
 
 
+def _clean_size(value) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _clean_release(found) -> dict:
+    """A post's mirrors and torrents, reduced to what installing needs."""
+    found = found if isinstance(found, dict) else {}
+    mirrors = []
+    for mirror in found.get("mirrors") or []:
+        files = [{"url": _clean_url(f.get("url")), "name": _clean_text(f.get("name"), 200),
+                  "optional": bool(f.get("optional"))}
+                 for f in mirror.get("files") or [] if isinstance(f, dict)]
+        files = [f for f in files if f["url"] and f["name"]][:400]
+        if files:
+            mirrors.append({"host": _clean_text(mirror.get("host"), 80),
+                            "label": _clean_text(mirror.get("label"), 60), "files": files})
+    swarm = []
+    for item in found.get("torrents") or []:
+        link = _clean_link(item.get("url")) if isinstance(item, dict) else ""
+        if link:
+            swarm.append({"url": link, "label": _clean_text(item.get("label"), 60),
+                          "name": _clean_text(item.get("name"), 200)})
+    return {"mirrors": mirrors[:12], "torrents": swarm[:6]}
+
+
+def site_game(post: dict, catalogue_id: str) -> dict | None:
+    """One release post as a store game."""
+    name = _clean_text(post.get("name"), 120)
+    page = _clean_url(post.get("url"))
+    if not name or not page:
+        return None
+    return {
+        "id": game_id(catalogue_id, name),
+        "catalogue": catalogue_id,
+        "name": name,
+        "repo": "", "asset": "", "downloads": {},
+        "tags": [_clean_text(t, 24) for t in post.get("tags") or [] if _clean_text(t, 24)][:8],
+        "blurb": _clean_text(post.get("blurb"), 600),
+        "licence": "",
+        "site": page,
+        "page": page,
+        "version": _clean_text(post.get("version"), 40),
+        "extras": _clean_text(post.get("extras"), 120),
+        "note": "",
+        "needs_data": "",
+        "company": _clean_text(post.get("company"), 80),
+        "date": _clean_text(post.get("date"), 10),
+        "art_name": _clean_text(post.get("art_name"), 120) or name,
+        "cover": "", "hero": "", "logo": "", "wide": "",
+        "site_cover": _clean_url(post.get("cover")),
+        "size": _clean_size(post.get("size")),
+        "download_size": _clean_size(post.get("download_size")),
+        "release": _clean_release(post.get("downloads")),
+    }
+
+
+def _site_pages(settings: dict | None = None) -> int:
+    settings = settings or library.load_settings()
+    try:
+        return max(1, min(50, int(settings.get("store_site_pages") or 5)))
+    except (TypeError, ValueError):
+        return 5
+
+
+def _site_catalogue(source: str, catalogue_id: str, text: str = "") -> dict:
+    settings = library.load_settings()
+    try:
+        found = sitecatalog.read_site(source, pages=_site_pages(settings), text=text,
+                                      language=settings.get("store_language") or "english")
+    except sitecatalog.SiteError as exc:
+        raise StoreError(str(exc)) from exc
+    games, seen, skipped = [], set(), 0
+    for post in found["posts"][:MAX_GAMES]:
+        game = site_game(post, catalogue_id)
+        if not game or game["id"] in seen:
+            skipped += 1                 # the newest post of a game comes first and wins
+            continue
+        seen.add(game["id"])
+        games.append(game)
+    if not games:
+        raise StoreError("That is a web page, but none of its posts offer downloads that could "
+                         "be read. For a JSON catalogue, use the address of the raw file.")
+    return {"name": found["name"], "games": games, "skipped": skipped, "kind": "site",
+            "pages": len(found["pages"])}
+
+
+def read_source(source: str, catalogue_id: str) -> dict:
+    """A catalogue from a JSON file or a release website, whichever it is."""
+    source = clean_source(source)
+    web = bool(re.match(r"^https?://", source, re.I))
+    try:
+        blob = fetch_source(source)
+    except StoreError:
+        if not web:
+            raise
+        # Some sites turn away anything that does not look like a browser.
+        return _site_catalogue(source, catalogue_id)
+    if web and sitecatalog.looks_like_site(blob) and direct_link(source) == source:
+        text = blob.decode("utf-8", "replace")
+        return _site_catalogue(source, catalogue_id, text=text)
+    parsed = parse_catalogue(blob, catalogue_id)
+    parsed["kind"] = "json"
+    return parsed
+
+
 def test_source(source: str) -> dict:
     """Fetch and read a catalogue without saving it, so it can be checked first."""
     if not source.strip():
         raise StoreError("Type a web address or a file path first.")
-    parsed = parse_catalogue(fetch_source(source), "test")
+    parsed = read_source(source, "test")
     if not parsed["games"]:
         raise StoreError("It was read, but it has no usable games in it.")
     return {
         "name": parsed["name"],
         "count": len(parsed["games"]),
         "skipped": parsed["skipped"],
+        "kind": parsed.get("kind", "json"),
+        "pages": parsed.get("pages", 0),
         "sample": [g["name"] for g in parsed["games"][:5]],
     }
 
@@ -403,19 +521,24 @@ def load_catalogues(force: bool = False) -> list[dict]:
             cid, source = entry["id"], entry["source"]
             cached = cache.get(cid) if isinstance(cache.get(cid), dict) else None
             stale = (not cached or cached.get("source") != source
-                     or time.time() - cached.get("fetched", 0) > CATALOGUE_HOURS * 3600)
+                     or time.time() - cached.get("fetched", 0) > CATALOGUE_HOURS * 3600
+                     or (cached.get("kind") == "site"
+                         and cached.get("site_pages") != _site_pages(settings)))
             if entry["enabled"] and (force or stale):
                 try:
-                    parsed = parse_catalogue(fetch_source(source), cid)
+                    parsed = read_source(source, cid)
                     cached = {"fetched": time.time(), "source": source, "name": parsed["name"],
-                              "games": parsed["games"], "error": ""}
+                              "games": parsed["games"], "error": "",
+                              "kind": parsed.get("kind", "json"),
+                              "site_pages": _site_pages(settings)}
                 except StoreError as exc:
                     # Keep whatever was read last time: a site being down for
                     # an hour should not empty the shelf.
                     old = cached if cached and cached.get("source") == source else {}
                     cached = {"fetched": time.time(), "source": source,
                               "name": old.get("name", ""), "games": old.get("games", []),
-                              "error": str(exc)}
+                              "error": str(exc), "kind": old.get("kind", "json"),
+                              "site_pages": _site_pages(settings)}
                 cache[cid] = cached
                 changed = True
             cached = cached or {}
@@ -455,7 +578,7 @@ def platform_download(game: dict, system: str = "") -> str:
 
 
 def installable(game: dict) -> bool:
-    return bool(game.get("repo") or platform_download(game))
+    return bool(game.get("repo") or platform_download(game) or game.get("page"))
 
 
 # --------------------------------------------------------------------------
@@ -478,7 +601,7 @@ def _lookup_art(game: dict, kinds: list[str], cache: dict, client) -> dict:
     try:
         sgdb_id = entry.get("sgdb_id")
         if not sgdb_id:
-            found = client.match(game["name"])
+            found = client.match(game.get("art_name") or game["name"])
             if not found:
                 entry = {"no_match": True, "fetched": time.time()}
                 cache[key] = entry
@@ -524,7 +647,10 @@ def covers(ids: list[str], budget: int = 12) -> dict:
                 entry = _lookup_art(game, ["capsule"], cache, client)
                 looked += 1
             if settled(entry) or client is None:
-                out[game["id"]] = entry.get("thumb") or entry.get("capsule") or ""
+                # A release blog's own picture is a small thumbnail, so it
+                # only stands in when SteamGridDB has nothing better.
+                out[game["id"]] = (entry.get("thumb") or entry.get("capsule")
+                                   or game.get("site_cover") or "")
         try:
             _write_json(_art_cache_path(), cache)
         except OSError:
@@ -551,6 +677,7 @@ def detail_art(gid: str) -> dict:
             pass
     for kind, source in (("cover", "capsule"), ("hero", "hero"), ("logo", "logo")):
         art[kind] = art[kind] or entry.get(source, "")
+    art["cover"] = art["cover"] or game.get("site_cover", "")
     return art
 
 
@@ -735,12 +862,16 @@ def _run_job(job: StoreJob, game: dict) -> None:
 
 def _install_steps(job: StoreJob, game: dict) -> None:
     settings = library.load_settings()
+    folder = download_folder(settings)
+    folder.mkdir(parents=True, exist_ok=True)
+    if game.get("page"):
+        result, shared = _fetch_release(job, game, settings, folder)
+        _install_and_record(job, game, settings, folder, result, shared, game.get("version", ""))
+        return
+
     url, version = _resolve_download(game, settings)
     if job.cancel:
         raise Stopped()
-
-    folder = download_folder(settings)
-    folder.mkdir(parents=True, exist_ok=True)
     job.phase, job.progress, job.message = "downloading", 0.0, "Starting the download"
 
     def progress(done: int, total: int) -> None:
@@ -769,7 +900,12 @@ def _install_steps(job: StoreJob, game: dict) -> None:
         if problem:
             _tidy(Path(result["path"]), folder, {"store_keep_downloads": False})
             raise StoreError(problem)
+    _install_and_record(job, game, settings, folder, result, shared, version)
 
+
+def _install_and_record(job: StoreJob, game: dict, settings: dict, folder: Path,
+                        result: dict, shared, version: str) -> None:
+    """Queue what was downloaded, wait for it, add it to Steam, tidy up."""
     job.phase, job.progress, job.message = "installing", -1.0, "Waiting its turn"
     task = autoinstall.QUEUE.add(result["path"], name=game["name"], mode="quiet",
                                  origin="store", size=int(game.get("size") or 0))
@@ -796,7 +932,7 @@ def _install_steps(job: StoreJob, game: dict) -> None:
     else:
         if shared:
             _forget_torrent(*shared)
-        _tidy(Path(result["path"]), folder, settings)
+        _tidy(Path(result.get("tidy") or result["path"]), folder, settings)
 
     job.phase, job.finished = "done", time.time()
     job.message = {
@@ -807,6 +943,275 @@ def _install_steps(job: StoreJob, game: dict) -> None:
     }.get(record["steam"], "Installed.")
     if record["steam"] == "pending" and settings.get("store_restart") == "now":
         threading.Thread(target=_restart_when_idle, daemon=True).start()
+
+
+# --------------------------------------------------------------------------
+# releases published as blog posts
+# --------------------------------------------------------------------------
+
+UNPACKED = "unpacked"
+UNPACKED_MARK = ".nsgm-unpacked"
+PARTS_FILE = ".nsgm-parts.json"
+
+
+def _folder_name(name: str) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(". ")
+    return cleaned[:80] or "Game"
+
+
+def _fetch_release(job: StoreJob, game: dict, settings: dict, folder: Path):
+    """Download one post's release, by torrent or from its mirrors.
+
+    Returns ``(result, shared)`` the way the ordinary path does: ``result``
+    names what to install and what to delete afterwards, ``shared`` is the
+    torrent to forget once installed, if it came that way.
+    """
+    job.phase, job.progress, job.message = "resolving", -1.0, "Reading the release page"
+    release = game.get("release") or {}
+    try:
+        post = sitecatalog.read_one(game["page"],
+                                    language=settings.get("store_language") or "english")
+        if sitecatalog.has_downloads(post):
+            release = _clean_release(post["downloads"])
+    except sitecatalog.SiteError as exc:
+        # Links read when the catalogue was refreshed are hours old at
+        # most, which beats giving up while the site has a bad minute.
+        if not (release.get("mirrors") or release.get("torrents")):
+            raise StoreError(f"The release page could not be read: {exc}") from exc
+    if job.cancel:
+        raise Stopped()
+    mirrors, swarm = release.get("mirrors") or [], release.get("torrents") or []
+    if not mirrors and not swarm:
+        raise StoreError("The release page has no download links on it any more.")
+
+    method = settings.get("store_site_method", "auto")
+    if method == "torrent":
+        order = ["torrent"]
+    elif method == "direct":
+        order = ["direct"]
+    else:
+        try:
+            have_client = bool(swarm) and torrent_client(settings) is not None
+        except StoreError:
+            have_client = False
+        order = ["torrent", "direct"] if have_client else ["direct", "torrent"]
+    order = [way for way in order if (mirrors if way == "direct" else swarm)]
+    if not order:
+        raise StoreError("This release is only offered over BitTorrent, and the store is set to "
+                         "direct downloads only." if swarm else
+                         "This release has no torrent, and the store is set to BitTorrent only.")
+
+    problems = []
+    for way in order:
+        try:
+            if way == "torrent":
+                return _release_by_torrent(job, swarm, folder, settings)
+            target = _download_release(job, game, mirrors, folder, settings)
+            return {"path": str(_prepare_release(job, target, settings)),
+                    "tidy": str(target)}, None
+        except StoreError as exc:
+            problems.append(str(exc))
+    raise StoreError(" Then: ".join(problems))
+
+
+def _release_by_torrent(job: StoreJob, swarm: list, folder: Path, settings: dict):
+    job.phase, job.progress = "downloading", -1.0
+    problems = []
+    for item in swarm[:3]:
+        try:
+            path, client, info_hash = _torrent_download(job, item["url"], folder, settings)
+            return {"path": str(path)}, (client, info_hash)
+        except StoreError as exc:
+            problems.append(str(exc))
+    raise StoreError(problems[0] if len(set(problems)) == 1 else " ".join(problems))
+
+
+def _release_files(mirrors: list, optional: bool) -> tuple[list, dict]:
+    """Every file the release needs, and where each one can be had.
+
+    The first mirror's list is the release; another mirror is only a
+    second source for a file of the same name.
+    """
+    names, sources = [], {}
+    for mirror in mirrors:
+        for item in mirror.get("files") or []:
+            if item.get("optional") and not optional:
+                continue
+            key = item["name"].lower()
+            if key not in sources:
+                sources[key] = []
+                names.append(item["name"])
+            sources[key].append((mirror, item["url"]))
+    return names, sources
+
+
+def _download_release(job: StoreJob, game: dict, mirrors: list, folder: Path,
+                      settings: dict) -> Path:
+    """Fetch every needed file into a folder of the game's own, resuming.
+
+    Each file is tried on the mirror that last worked first, then on the
+    others, so one host being down or slow costs one file's worth of
+    retrying rather than the whole release.
+    """
+    target = folder / _folder_name(game["name"])
+    target.mkdir(parents=True, exist_ok=True)
+    if (target / UNPACKED / UNPACKED_MARK).is_file():
+        return target                        # unpacked on an earlier attempt
+    names, sources = _release_files(mirrors, bool(settings.get("store_optional_files")))
+    if not names:
+        raise StoreError("Every file in this release is marked optional, so there is nothing "
+                         "to download. Turn on optional files in Settings to fetch them.")
+
+    manifest_path = target / PARTS_FILE
+    finished = _read_json(manifest_path, {})
+    expected = int(game.get("download_size") or 0)
+    done_bytes = sum(int(finished.get(n.lower()) or 0) for n in names
+                     if (target / download.clean_file_name(n)).is_file())
+    good = None                       # the mirror that last delivered a file
+    job.phase, job.progress = "downloading", 0.0
+
+    for index, name in enumerate(names):
+        key = name.lower()
+        path = target / download.clean_file_name(name)
+        if key in finished and path.is_file() and path.stat().st_size == finished[key]:
+            continue
+        count = f"file {index + 1} of {len(names)}" if len(names) > 1 else ""
+
+        def progress(done: int, total: int, count=count, index=index) -> None:
+            if job.cancel:
+                raise Stopped()
+            sofar = done_bytes + done
+            if expected:
+                job.progress = min(sofar / expected, 0.99)
+            elif total:
+                job.progress = (index + done / total) / len(names)
+            amount = (f"{sofar / 1048576:,.0f} MB of {expected / 1048576:,.0f} MB" if expected
+                      else f"{sofar / 1048576:,.0f} MB")
+            job.message = " · ".join(part for part in (amount, count) if part)
+
+        problems = []
+        options = sorted(sources[key], key=lambda pair: pair[0] is not good)
+        for mirror, url in options:
+            if job.cancel:
+                raise Stopped()
+            label = mirror.get("label") or mirror.get("host") or "a mirror"
+            job.message = " · ".join(part for part in (f"Asking {label}", count) if part)
+            try:
+                link = hosters.resolve(url, name)
+                got = download.download(link["url"], target, progress=progress, name=name,
+                                        headers=link["headers"])
+            except (hosters.HosterError, download.DownloadError) as exc:
+                problems.append(f"{label}: {exc}")
+                continue
+            finished[key] = got["size"]
+            done_bytes += got["size"]
+            good = mirror
+            try:
+                _write_json(manifest_path, finished)
+            except OSError:
+                pass
+            break
+        else:
+            raise StoreError(f"“{name}” could not be downloaded from any mirror. "
+                             + " ".join(problems[:4]))
+    return target
+
+
+VOLUME_TAIL = re.compile(r"(?i)(\.part\d+\.rar|\.(7z|zip|rar)\.\d{3}|\.r\d{2}|\.rar)$")
+
+
+def _archive_sets(files: list[Path]) -> list[Path]:
+    """The first volume of each archive among the files, one per set."""
+    sets: dict[str, list[Path]] = {}
+    for item in files:
+        if installers.is_archive(item) or VOLUME_TAIL.search(item.name):
+            sets.setdefault(VOLUME_TAIL.sub("", item.name).lower(), []).append(item)
+    out = []
+    for members in sets.values():
+        first = installers.first_volume(members)
+        if first is not None:
+            out.append(first)
+    return out
+
+
+def _prepare_release(job: StoreJob, target: Path, settings: dict) -> Path:
+    """What the install queue should be given for a downloaded release.
+
+    A release packed as an archive usually holds a setup program, not the
+    game. Handing the archive straight to the queue would unpack the setup
+    program into the library and stop there, so it is unpacked here first
+    and the queue gets the folder, which it then installs from properly.
+
+    Files downloaded loose beside the archive - a language pack, optional
+    extras - belong next to that setup program, which looks for them in
+    its own folder, so they are moved there.
+    """
+    staging = target / UNPACKED
+    if (staging / UNPACKED_MARK).is_file():
+        return staging
+    files = [p for p in target.iterdir() if p.is_file() and not p.name.startswith(".")
+             and not p.name.endswith(".part")]
+    language = settings.get("store_language") or "english"
+    firsts = _archive_sets(files)
+    # The release itself first; optional extras packed as archives after.
+    firsts.sort(key=lambda p: (sitecatalog.is_optional(p.name, language), p.name.lower()))
+    if not firsts:
+        return target                      # a setup program and its data, or the game itself
+
+    native = (".zip", ".tar", ".gz", ".tgz", ".xz", ".bz2")
+    if not pipeline._external_unpacker() and any(p.suffix.lower() not in native for p in firsts):
+        if not tools.can_fetch():
+            raise StoreError(f"{firsts[0].name} needs 7-Zip to unpack. Install p7zip (7-Zip) "
+                             "with your package manager, then press Try again.")
+        job.message = "Getting 7-Zip"
+        try:
+            tools.fetch_seven_zip()
+        except tools.ToolError as exc:
+            raise StoreError(f"7-Zip could not be fetched ({exc}).") from exc
+
+    job.phase, job.progress = "installing", 0.0
+
+    def progress(fraction: float, name: str = "") -> None:
+        job.progress = max(0.0, min(float(fraction), 1.0))
+        job.message = f"Unpacking {Path(name).name}" if name else "Unpacking the download"
+
+    if staging.exists():
+        shutil.rmtree(staging, ignore_errors=True)     # a half-finished earlier attempt
+    try:
+        for number, volume in enumerate(firsts):
+            job.message = "Unpacking the download"
+            pipeline.unpack(str(volume), into=str(staging), keep_archive=True, progress=progress,
+                            flatten=(number == 0), stop=lambda: job.cancel)
+    except pipeline.Stopped as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise Stopped() from exc
+    except pipeline.PipelineError as exc:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise StoreError(f"The download would not unpack: {exc}") from exc
+
+    packed = {p for p in files if installers.is_archive(p) or VOLUME_TAIL.search(p.name)}
+    setup = installers.find_installer(staging)
+    home = setup.parent if setup else staging
+    keep = bool(settings.get("store_keep_downloads"))
+    for loose in files:
+        if loose in packed:
+            continue
+        try:
+            (shutil.copy2 if keep else shutil.move)(str(loose), str(home / loose.name))
+        except OSError as exc:
+            raise StoreError(f"{loose.name} could not be put beside the setup program "
+                             f"({exc.strerror or exc}).") from exc
+    (staging / UNPACKED_MARK).write_text("", "utf-8")
+
+    # The archives are spent; a big release would otherwise take its space
+    # twice over until the install finished.
+    if not keep:
+        for item in packed:
+            try:
+                item.unlink()
+            except OSError:
+                pass
+    return staging
 
 
 # --------------------------------------------------------------------------
@@ -1131,7 +1536,7 @@ def _steam_record(game: dict, found: dict) -> dict:
     """The installed game, named and dressed the way the catalogue has it."""
     entry = dict(found)
     entry["title"] = game["name"]
-    entry["sgdb_hint"] = game["name"]
+    entry["sgdb_hint"] = game.get("art_name") or game["name"]
     entry["source"] = "store"
     entry["tags"] = [t for t in entry.get("tags") or [] if t != "Installed"] + [STORE_TAG]
     art = {kind: game[key] for kind, key in
@@ -1449,6 +1854,7 @@ SETTING_KEYS = {
     "store_restart": ("exit", "now"),
     "store_reopen": ("bigpicture", "library"),
     "store_glyphs": ("auto", "xbox", "playstation"),
+    "store_site_method": ("auto", "direct", "torrent"),
 }
 
 
@@ -1461,6 +1867,9 @@ def store_settings(settings: dict | None = None) -> dict:
         "keep_downloads": bool(settings.get("store_keep_downloads")),
         "keep_seeding": bool(settings.get("store_keep_seeding")),
         "builtin": settings.get("store_builtin_enabled", True) is not False,
+        "site_method": settings.get("store_site_method", "auto"),
+        "optional_files": bool(settings.get("store_optional_files")),
+        "site_pages": _site_pages(settings),
         "torrent": torrent_info(),
         "catalogues": clean_catalogue_list(settings.get("store_catalogues")),
     }
@@ -1480,6 +1889,10 @@ def save_store_settings(payload: dict) -> dict:
         patch["store_keep_seeding"] = bool(payload["keep_seeding"])
     if "catalogues" in payload:
         patch["store_catalogues"] = clean_catalogue_list(payload["catalogues"])
+    if "optional_files" in payload:
+        patch["store_optional_files"] = bool(payload["optional_files"])
+    if "site_pages" in payload:
+        patch["store_site_pages"] = _site_pages({"store_site_pages": payload["site_pages"]})
     if patch:
         library.save_settings(patch)
     return store_settings()
@@ -1493,6 +1906,7 @@ def overview(force: bool = False) -> dict:
     for entry in catalogues:
         for game in entry["games"]:
             item = dict(game)
+            item.pop("release", None)       # mirror lists are for installing, not showing
             item["catalogue_name"] = entry["name"]
             item["installable"] = installable(game)
             games.append(item)

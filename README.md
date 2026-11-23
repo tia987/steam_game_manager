@@ -691,6 +691,56 @@ An entry needs at least a `repo`, a download or a `site`. Entries with
 none of those, or that repeat a name, are skipped and counted when you
 press Check.
 
+### Release websites as catalogues
+
+A catalogue can also be a website that publishes one release per blog
+post: a cover, a few `Key: value` lines, then a list of download mirrors
+and usually a magnet link. Paste the site's front page (or a category
+page) into the same box and press **Check**. You see how many games were
+found and over how many pages. Settings → *Pages to read from a release
+website* sets how far back it goes (5 pages by default).
+
+What is read from each post:
+
+| From the post | Becomes |
+| --- | --- |
+| the title, e.g. `Game: Some Edition, v1.0.9 + Bonus OST` | the name `Game: Some Edition`, the version `v1.0.9` and the extras `+ Bonus OST`; artwork is looked up as `Game` |
+| `Genres/Tags`, tag links | filter chips |
+| `Company`, `Original Size`, `Repack Size` | shown on the game's page; the original size picks the library folder |
+| the first picture | the cover, when SteamGridDB has none |
+| a *Description* heading or spoiler | the blurb |
+| each item under a *Download* / *Mirrors* heading | one mirror, with every file link inside it or in the spoiler after it |
+| magnet and `.torrent` links | the BitTorrent route |
+
+Posts with no download links on a page where other posts have them are
+news ("Upcoming", "Updates digest") and are left out.
+
+Installing one reads the post again, so the links are current, then:
+
+1. **Picks a route.** Settings → *Games from release websites*: *Best
+   available* uses BitTorrent when a torrent app is running and the
+   mirrors otherwise, falling back to the other if the first fails;
+   *Direct downloads* and *BitTorrent* use only that one.
+2. **Fetches every file the release needs**, into a folder of its own in
+   the store's download folder. Files named `optional` or `bonus` are
+   skipped unless *Download optional files* is on; of `selective-<language>`
+   files only English is fetched (`store_language` in `settings.json`
+   changes that). Each file is tried on the mirror that delivered the
+   last one first, then on the others, so one host being down costs one
+   retry, not the release. An interrupted file resumes, and files already
+   finished are not fetched again.
+3. **Gets past the file host's page.** Mirror links usually lead to a
+   host's page with a button rather than to the file. The store follows
+   it the way a browser would without running script: a link or quoted
+   address naming the same file, or the page's download form, after any
+   countdown, keeping the host's cookies. A host that builds its link
+   entirely in script cannot be read; that mirror is reported and the
+   next one tried.
+4. **Unpacks before installing.** A release packed as an archive usually
+   holds a setup program. It is unpacked first (7-Zip is fetched on
+   Windows if needed), loose files such as language packs are put beside
+   the setup program, and that folder goes to the install queue.
+
 ## Open source games
 
 The **Open source** tab is a catalogue of games that are genuinely free

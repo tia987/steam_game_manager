@@ -2924,7 +2924,7 @@ async function openFolder(path, mark = "") {
 }
 
 async function loadFolder(path) {
-  const list = $("folderList");
+  const list = $("folderBrowseList");
   list.innerHTML = '<li><button type="button" disabled>Loading…</button></li>';
   try {
     const data = await api(`/api/browse?path=${encodeURIComponent(path)}&files=all`);

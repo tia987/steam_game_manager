@@ -859,7 +859,8 @@ function renderSettings() {
     const row = make("div", "row row--catalogue");
     const body = make("div");
     body.append(make("p", "row__title", entry.name));
-    const detail = entry.builtin ? `${entry.count} free and open-source games, always included`
+    const detail = entry.builtin ? (entry.enabled ? `${entry.count} free and open-source games, built in`
+                                                  : "Built in · switched off, so its games are hidden")
       : !entry.enabled ? `Switched off · ${entry.source}`
       : entry.error ? `${entry.error} · ${entry.source}`
       : `${plural(entry.count, "game", "games")} · ${entry.source}`;
@@ -867,9 +868,9 @@ function renderSettings() {
     if (entry.error) sub.classList.add("row__sub--warn");
     body.append(sub);
     const actions = make("div", "row__actions");
+    actions.append(button(entry.enabled ? "Switch off" : "Switch on", "", () => changeCatalogue(entry.id, "toggle"),
+                          `catrow:toggle:${entry.id}`));
     if (!entry.builtin) {
-      actions.append(button(entry.enabled ? "Switch off" : "Switch on", "", () => changeCatalogue(entry.id, "toggle"),
-                            `catrow:toggle:${entry.id}`));
       actions.append(button("Remove", "btn--danger", () => changeCatalogue(entry.id, "remove"),
                             `catrow:remove:${entry.id}`));
     }
@@ -892,6 +893,13 @@ async function saveSettings(patch) {
 }
 
 async function changeCatalogue(id, how) {
+  if (id === "builtin") {
+    if (await saveSettings({ builtin: !S.data.settings.builtin })) {
+      await loadOverview();
+      focusFirst();
+    }
+    return;
+  }
   let list = S.data.settings.catalogues.map((c) => ({ ...c }));
   if (how === "remove") list = list.filter((c) => c.id !== id);
   else list = list.map((c) => (c.id === id ? { ...c, enabled: !c.enabled } : c));

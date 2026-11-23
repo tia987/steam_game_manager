@@ -1274,14 +1274,84 @@ def _cache_put(cache_dir, key: str, result: dict, pages: int = 1) -> None:
         pass
 
 
+PART_SUFFIX = re.compile(r"(?i)^[-_. ]?(part[-_. ]?)?\d{1,3}$")
+TRACK_SUFFIX = re.compile(r"(?i)^[-_. ]*(\(track \d+\)|track[-_. ]?\d+)$")
+
+
+def group_parts(candidates: list[dict]) -> list[dict]:
+    """Fold files that are only pieces of another into that other one.
+
+    Two shapes are common. An installer split into volumes: ``setup.exe``
+    beside ``setup-1.bin``, ``setup-2.bin``, which it reads and cannot run
+    without. And a CD image: ``game.cue`` beside ``game.bin`` or
+    ``game (Track 01).bin``. Listed apart they swamp the results and are
+    useless one by one, so each piece joins its parent, and downloading
+    the parent fetches the pieces with it.
+    """
+    def split(url: str) -> tuple[str, str, str]:
+        path = urllib.parse.unquote(urllib.parse.urlparse(url).path)
+        folder, _, name = path.rpartition("/")
+        stem, dot, ext = name.rpartition(".")
+        return folder, (stem if dot else name).lower(), (ext if dot else "").lower()
+
+    parents: dict[tuple, dict] = {}
+    for candidate in candidates:
+        if candidate.get("kind", "file") != "file":
+            continue
+        folder, stem, ext = split(candidate["url"])
+        if ext in ("exe", "cue"):
+            parents[(folder, stem, ext)] = candidate
+
+    kept = []
+    for candidate in candidates:
+        folder, stem, ext = split(candidate["url"])
+        parent = None
+        if candidate.get("kind", "file") == "file" and ext == "bin":
+            for (p_folder, p_stem, p_ext), owner in parents.items():
+                if p_folder != folder or not stem.startswith(p_stem):
+                    continue
+                rest = stem[len(p_stem):]
+                if p_ext == "exe" and PART_SUFFIX.match(rest):
+                    parent = owner
+                elif p_ext == "cue" and (rest == "" or TRACK_SUFFIX.match(rest)):
+                    parent = owner
+                if parent:
+                    break
+        if parent is None:
+            kept.append(candidate)
+            continue
+        parts = parent.setdefault("parts", [])
+        parts.append({"url": candidate["url"], "name": candidate.get("name", ""),
+                      "size": candidate.get("size", 0)})
+        parent["size"] = (parent.get("size") or 0) + (candidate.get("size") or 0)
+    for candidate in kept:
+        parts = candidate.get("parts")
+        if parts:
+            parts.sort(key=lambda part: part["name"].lower())
+            what = "disc image" if split(candidate["url"])[2] == "cue" else "installer"
+            candidate["label"] = (f"{what} with {len(parts)} part"
+                                  f"{'s' if len(parts) != 1 else ''}, downloaded together")
+    return kept
+
+
 def _resolve_uncached(url: str, system: str, token: str, timeout: int,
                       limit: int, tag: str, pages: int, progress=None) -> dict:
     # archive.org publishes proper APIs; reading its HTML would be a
     # worse answer to a question it already answers directly.
     result = None
-    if archive.is_archive(url) and archive.identifier_of(url):
+    if archive.is_archive(url) and (archive.identifier_of(url) or archive.search_query(url)):
         try:
-            if not archive.is_collection(archive.identifier_of(url), timeout):
+            query = archive.listing_query(url, timeout)
+            if query:
+                # A quick look reads the first thousand items; Scan the
+                # whole site keeps going, a hundred per page of budget.
+                want = 1000 if pages <= 1 else min(20000, max(1000, pages * 100))
+                def relay(found: int, total: int) -> None:
+                    # pages read, files found, magnets found, pages queued
+                    if progress:
+                        progress(max(1, found // 100), 0, found, 1 if found < want else 0)
+                result = archive.collection_files(url, query, want, timeout, progress=relay)
+            else:
                 result = archive.item(url, timeout)
         except archive.ArchiveError:
             result = None
@@ -1293,6 +1363,7 @@ def _resolve_uncached(url: str, system: str, token: str, timeout: int,
     if result is None:
         result = _from_html(url, system, timeout, pages, progress=progress)
 
+    result["candidates"] = group_parts(result["candidates"])
     page_host = urllib.parse.urlparse(result["page"]).netloc.lower()
     for candidate in result["candidates"]:
         candidate.setdefault("kind", "file")

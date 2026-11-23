@@ -32,7 +32,7 @@
     <button id="tabGet" class="tab" type="button">Get software</button>
     <button id="tabInstalls" class="tab" type="button">Installs<span class="tab__badge" id="installsBadge" hidden></span></button>
     <button id="tabCatalog" class="tab" type="button">Open source</button>
-    <button id="tabFeeds" class="tab" type="button">What's out now</button>
+    <button id="tabFeeds" class="tab" type="button" hidden>What's out now</button>
     <button id="tabUninstall" class="tab" type="button">Uninstall</button>
   </nav>
 
@@ -144,7 +144,6 @@
                placeholder="Filter headlines" autocomplete="off">
         <nav class="chips" id="feedTags"></nav>
         <div class="toolbar__actions">
-          <button id="linkDownload" class="button" type="button">Get from a link</button>
           <button id="manageFeeds" class="button" type="button">Manage feeds</button>
           <button id="refreshFeeds" class="button button--accent" type="button">Refresh</button>
         </div>
@@ -191,6 +190,8 @@
           <button id="getResolve" class="button button--primary" type="button">Find</button>
           <button id="getRefresh" class="button" type="button" title="Fetch again, ignoring what was cached">Refresh</button>
           <button id="getWatch" class="button" type="button">Watch</button>
+          <button id="linkDownload" class="button" type="button"
+                  title="Download a file from its direct address">Get from a link</button>
         </div>
       </div>
 
@@ -495,6 +496,24 @@
         GitHub allows 60 anonymous requests an hour, which the catalogue can use up.
         A read-only token raises that to 5000. No scopes required.
       </span></label>
+    <fieldset class="field">
+      <legend class="field__label">Sources</legend>
+      <span class="field__note">Where the store finds games: the built-in open-source catalogue
+        (also shown in the Open source tab) and any catalogues you add. Switch one off to hide its games
+        without forgetting it. The same list is in the store's Settings.</span>
+      <ul id="catalogueSourceList" class="stack" style="margin:6px 0"></ul>
+      <span class="field__row">
+        <input id="catalogueSourceInput" class="input input--mono" type="text" autocomplete="off"
+               placeholder="Address or path of a catalogue (.json)">
+        <button id="catalogueSourceCheck" class="button" type="button">Check</button>
+      </span>
+      <span class="field__row field__row--center" id="catalogueSourceResultRow" hidden>
+        <span class="field__note" id="catalogueSourceResult"></span>
+        <button id="catalogueSourceAdd" class="button button--primary" type="button" hidden>Add it</button>
+      </span>
+      <span class="field__note">Pages you keep coming back to in Get software are under
+        Watched pages there.</span>
+    </fieldset>
     <fieldset class="field">
       <legend class="field__label">Torrent client</legend>
       <select id="torrentKind" class="input input--select">

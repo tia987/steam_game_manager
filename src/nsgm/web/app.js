@@ -654,6 +654,117 @@ async function scan() {
   }
 }
 
+// -------------------------------------------------------------- sources
+// The store's catalogues, edited from here too: the same settings behind
+// the same endpoints, so the two lists can never disagree.
+
+const SOURCES = { list: [], settings: null, checked: null };
+
+async function loadSources() {
+  const box = $("catalogueSourceList");
+  try {
+    const data = await api("/api/sources");
+    SOURCES.list = data.catalogues || [];
+    SOURCES.settings = data.settings || {};
+    renderSources();
+  } catch (error) {
+    box.innerHTML = `<li class="field__note">${escapeHtml(error.message)}</li>`;
+  }
+}
+
+function renderSources() {
+  const box = $("catalogueSourceList");
+  box.innerHTML = "";
+  for (const entry of SOURCES.list) {
+    const row = document.createElement("li");
+    row.className = "field__row field__row--center";
+    row.style.justifyContent = "space-between";
+    const detail = entry.builtin
+      ? (entry.enabled ? `${entry.count} games, built in` : "built in, switched off")
+      : !entry.enabled ? `switched off · ${entry.source}`
+      : entry.error ? `${entry.error} · ${entry.source}`
+      : `${entry.count} game${entry.count === 1 ? "" : "s"} · ${entry.source}`;
+    const text = document.createElement("span");
+    text.style.minWidth = "0";
+    text.style.overflowWrap = "anywhere";
+    text.innerHTML = `<b>${escapeHtml(entry.name)}</b><br>
+      <span class="field__note"${entry.error ? ' style="color:var(--warn,#ffb457)"' : ""}>${escapeHtml(detail)}</span>`;
+    const actions = document.createElement("span");
+    actions.className = "field__row";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "button";
+    toggle.textContent = entry.enabled ? "Switch off" : "Switch on";
+    toggle.addEventListener("click", () => changeSource(entry, "toggle"));
+    actions.append(toggle);
+    if (!entry.builtin) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "button";
+      remove.textContent = "Remove";
+      remove.addEventListener("click", () => changeSource(entry, "remove"));
+      actions.append(remove);
+    }
+    row.append(text, actions);
+    box.append(row);
+  }
+}
+
+async function saveSources(patch) {
+  const { settings } = await api("/api/store/settings", patch);
+  SOURCES.settings = settings;
+  await loadSources();
+}
+
+async function changeSource(entry, how) {
+  try {
+    if (entry.builtin) {
+      await saveSources({ builtin: !entry.enabled });
+      return;
+    }
+    let list = (SOURCES.settings.catalogues || []).map((c) => ({ ...c }));
+    if (how === "remove") list = list.filter((c) => c.id !== entry.id);
+    else list = list.map((c) => (c.id === entry.id ? { ...c, enabled: !c.enabled } : c));
+    await saveSources({ catalogues: list });
+  } catch (error) {
+    toast(error.message, "bad");
+  }
+}
+
+async function checkSource() {
+  const source = $("catalogueSourceInput").value.trim();
+  $("catalogueSourceResultRow").hidden = false;
+  $("catalogueSourceAdd").hidden = true;
+  $("catalogueSourceResult").textContent = "Reading it…";
+  SOURCES.checked = null;
+  try {
+    const found = await api("/api/store/catalogues/test", { source });
+    SOURCES.checked = { source, ...found };
+    $("catalogueSourceResult").textContent = `${found.name || "Untitled catalogue"}: ${found.count} game` +
+      `${found.count === 1 ? "" : "s"}, such as ${found.sample.join(", ")}` +
+      (found.skipped ? `. ${found.skipped} entries could not be used.` : ".");
+    $("catalogueSourceAdd").hidden = false;
+  } catch (error) {
+    $("catalogueSourceResult").textContent = error.message;
+  }
+}
+
+async function addSource() {
+  const checked = SOURCES.checked;
+  if (!checked) return;
+  try {
+    const list = (SOURCES.settings.catalogues || []).concat(
+      [{ source: checked.source, name: checked.name, enabled: true }]);
+    await saveSources({ catalogues: list });
+    toast(`Added ${checked.name || "the catalogue"}`);
+    $("catalogueSourceInput").value = "";
+    $("catalogueSourceResultRow").hidden = true;
+    SOURCES.checked = null;
+  } catch (error) {
+    toast(error.message, "bad");
+  }
+}
+
 async function matchArt() {
   if (!S.settings.api_key) {
     $("settingsDialog").showModal();
@@ -1761,6 +1872,9 @@ function renderResolved() {
       if (c.kind !== "file") bits.push(`<span class="tagchip" data-kind="${c.kind}">${c.kind}</span>`);
       if (c.offsite && c.host) bits.push(`<span class="tagchip" data-kind="offsite">${escapeHtml(c.host)}</span>`);
       if (c.mirrors) bits.push(`<span class="tagchip">+${c.mirrors} mirror</span>`);
+      if (c.parts && c.parts.length) {
+        bits.push(`<span class="tagchip" title="${escapeHtml(c.parts.map((part) => part.name).join("\n"))}">+${c.parts.length} part${c.parts.length === 1 ? "" : "s"}</span>`);
+      }
       row.innerHTML = `<span class="pick__name">
           <b>${escapeHtml(c.name)}</b>
           <span>${humanSize(c.size)}${c.size ? " \u00b7 " : ""}${bits.join(" ")}</span>
@@ -1772,6 +1886,19 @@ function renderResolved() {
         ? (torrentClient() ? `Download with ${torrentClient()}` : "Open in torrent app")
         : "Download";
       button.addEventListener("click", () => grab(c));
+      if (c.item_page) {
+        // An archive.org item: its own files are one step away.
+        const files = document.createElement("button");
+        files.className = "button";
+        files.type = "button";
+        files.textContent = "Files";
+        files.title = "List this item's files instead of its torrent";
+        files.addEventListener("click", () => {
+          $("getUrl").value = c.item_page;
+          resolvePage();
+        });
+        row.append(files);
+      }
       row.append(button);
       wrap.append(row);
     });
@@ -1824,7 +1951,10 @@ async function grab(candidate) {
       toast(result.message || "Handed to your torrent app");
       return;
     }
-    const { job } = await api("/api/download", { url: candidate.url });
+    // An installer split into volumes, or a disc image's tracks, comes with
+    // its pieces, which it cannot do without.
+    const parts = (candidate.parts || []).map((part) => part.url);
+    const { job } = await api("/api/download", { url: candidate.url, parts });
     const finished = await runJob(job, `Downloading ${candidate.name}`);
     const result = finished.result || {};
     let line = `Saved to ${result.path || "your downloads folder"}`;
@@ -2986,7 +3116,15 @@ function wire() {
   });
   $("account").addEventListener("change", () => { if (S.tab === "managed") loadManaged(); });
 
-  $("openSettings").addEventListener("click", () => $("settingsDialog").showModal());
+  $("openSettings").addEventListener("click", () => {
+    $("settingsDialog").showModal();
+    loadSources();
+  });
+  $("catalogueSourceCheck").addEventListener("click", checkSource);
+  $("catalogueSourceInput").addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); checkSource(); }
+  });
+  $("catalogueSourceAdd").addEventListener("click", addSource);
   // Only useful in a browser tab: a window has its own close button, and
   // closing that already ends the process.
   if (!S.boot.windowed) {

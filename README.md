@@ -178,57 +178,6 @@ Files are written to `userdata/<account>/config/grid` using the
 identifier Steam derives from the shortcut, so the client finds them
 without any further help.
 
-## What's out now
-
-The third tab is a reader for game deal, giveaway and release feeds. It
-shows headlines and links only. Nothing is downloaded, and every entry
-opens on the original site in a normal browser tab.
-
-Entries are merged from every enabled feed, sorted newest first, and
-filtered by the tag chips along the top (Free, Deals, Sales, News).
-Anything naming a game you already have is marked **In your library**,
-matched against both your scan results and your existing Steam
-shortcuts — useful for skipping past a sale on something you own.
-
-It ships with these, and you can enable, disable or delete any of them:
-
-| Feed | Covers |
-| --- | --- |
-| itch.io sales, free games, new releases | itch.io's own official feeds |
-| r/GameDeals, r/FreeGameFindings | community-posted deals and giveaways |
-| Free games, Fanatical, IndieGala | Steam group announcement feeds |
-| Steam news | storefront news |
-
-**Adding your own.** Press *Manage feeds* and paste either the feed
-address or just the site — `indiegames.example` works as well as
-`indiegames.example/feed.xml`. Pressing *Find* will:
-
-1. check whether what you pasted is already a feed
-2. if not, read the page and look for the feed it advertises
-3. if the page advertises none, try the addresses sites commonly use
-   (`/feed`, `/rss`, `/feed.xml`, `/atom.xml` and a few more)
-
-Whatever it finds is fetched and parsed before being offered, so you see
-the feed's real title, how many entries it holds and the newest headline
-**before** adding it. Nothing gets saved on the strength of a URL that
-might not work.
-
-RSS, Atom and RDF are all handled — the reader detects the format rather
-than requiring a particular one. If a site genuinely has no feed you get
-told where to look rather than a silent empty list.
-
-**Tags.** Give each feed a tag and it becomes a filter chip along the top
-of the tab. The built-in ones use Free, Deals, Sales and News, but the
-field is free text, so a feed tagged `Indie` gets its own chip. Tags are
-editable later from the same dialog, on any feed including the built-in
-ones.
-
-Feeds are cached to disk, so reopening the tab is instant and only
-*Refresh* touches the network. Conditional requests mean unchanged feeds
-cost almost nothing to re-check. If one feed is down or blocks the
-request, it is reported by name underneath the toolbar and the others
-still load.
-
 ## Get software
 
 Paste a project's download page and it lists the files, ready to fetch.
@@ -254,10 +203,20 @@ torrent client derives it. So a magnet is offered wherever a torrent is
 found, whether or not the site spelled one out.
 
 **The Internet Archive** is read through its own APIs instead of its
-HTML. A collection address walks the scrape API by cursor, which hands
-over every item without page numbers being involved at all, so nothing
-is missed and there is no depth to set. An item address reads its file
-list directly and derives the magnet from its `_archive.torrent`.
+HTML, which its pages draw with script. A collection or search address
+lists one magnet per item, built from the torrent hash the Archive's
+search hands over, so thousands of items cost no extra requests. The
+first look reads a thousand items; *Scan the whole site* reads up to
+twenty thousand. Items the Archive does not seed are counted and left
+out. **Files** beside an item lists that item's own files, read from its
+file list, with the magnet derived from its `_archive.torrent`.
+
+**Files that come in pieces.** An installer split into volumes
+(`setup.exe` with `setup-1.bin`, `setup-2.bin`) and a CD image (`game.cue`
+with `game.bin` or `game (Track 01).bin`) are shown as one entry, marked
+with how many parts it has. Downloading it fetches the parts too, into
+the same folder, where the installer or emulator looks for them. A
+`.bin` that belongs to nothing else stays listed on its own.
 
 **Progress while crawling.** A crawl has no knowable length until it
 ends, because every page read can reveal more. Rather than showing a
@@ -656,8 +615,10 @@ Saved games are not touched. Most games keep them in your user folders
 
 ### Catalogues
 
-The open-source catalogue is always there. Add your own under Settings →
-Catalogues: paste a web address or a file path and press **Check**. The
+The open-source catalogue is built in and on by default; switch it off to
+hide its games. Add your own under Settings → Catalogues, in the store,
+or under **Sources** in the main app's Settings; both edit the same
+list: paste a web address or a file path and press **Check**. The
 file is read and you see its name, its size and a few of its games
 before anything is saved. Catalogues on the web are re-read every six
 hours, or when you press *Refresh all catalogues*.

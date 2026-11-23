@@ -393,8 +393,9 @@ def clean_catalogue_list(items) -> list[dict]:
 def load_catalogues(force: bool = False) -> list[dict]:
     """Every catalogue with its games; user ones are re-read when stale."""
     settings = library.load_settings()
-    out = [{"id": BUILTIN_ID, "name": BUILTIN_NAME, "builtin": True, "enabled": True,
-            "source": "", "error": "", "games": builtin_games()}]
+    builtin_on = settings.get("store_builtin_enabled", True) is not False
+    out = [{"id": BUILTIN_ID, "name": BUILTIN_NAME, "builtin": True, "enabled": builtin_on,
+            "source": "", "error": "", "games": builtin_games() if builtin_on else []}]
     with _LOCK:
         cache = _read_json(_catalogue_cache_path(), {})
         changed = False
@@ -1459,6 +1460,7 @@ def store_settings(settings: dict | None = None) -> dict:
         "glyphs": settings.get("store_glyphs", "auto"),
         "keep_downloads": bool(settings.get("store_keep_downloads")),
         "keep_seeding": bool(settings.get("store_keep_seeding")),
+        "builtin": settings.get("store_builtin_enabled", True) is not False,
         "torrent": torrent_info(),
         "catalogues": clean_catalogue_list(settings.get("store_catalogues")),
     }
@@ -1472,6 +1474,8 @@ def save_store_settings(payload: dict) -> dict:
             patch[key] = payload[short]
     if "keep_downloads" in payload:
         patch["store_keep_downloads"] = bool(payload["keep_downloads"])
+    if "builtin" in payload:
+        patch["store_builtin_enabled"] = bool(payload["builtin"])
     if "keep_seeding" in payload:
         patch["store_keep_seeding"] = bool(payload["keep_seeding"])
     if "catalogues" in payload:

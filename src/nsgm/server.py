@@ -350,7 +350,7 @@ def watch_job(job: library.Job, watched: list, token: str) -> None:
     )
 
 
-def download_job(job: library.Job, url: str, folder: str) -> None:
+def download_job(job: library.Job, url: str, folder: str, parts: list | None = None) -> None:
     job.stage = "downloading"
     job.message = "Starting"
 
@@ -361,8 +361,13 @@ def download_job(job: library.Job, url: str, folder: str) -> None:
                        if total else f"{mb:.1f} MB")
 
     result = download.download(url, folder, progress=progress)
+    # The pieces an installer or disc image cannot do without go beside it,
+    # where it looks for them.
+    for number, part in enumerate(parts or [], 1):
+        job.message = f"Part {number} of {len(parts)}"
+        download.download(part, folder, progress=progress)
     job.result = result
-    job.message = f"Saved {result['name']}"
+    job.message = f"Saved {result['name']}" + (f" and {len(parts)} parts" if parts else "")
 
     # With automatic installing on, a finished download goes straight into
     # the queue, exactly as one arriving in the downloads folder would.
@@ -740,6 +745,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/presets":
             return json_response(self, {"presets": roms.PRESETS})
+
+        if path == "/api/sources":
+            # The catalogue list alone, for the main app's Settings: no games.
+            return json_response(self, {"catalogues": store.overview()["catalogues"],
+                                        "settings": store.store_settings()})
 
         if path == "/api/store":
             return json_response(self, store.overview(force=(query.get("refresh") or [""])[0] == "1"))
@@ -1179,7 +1189,9 @@ class Handler(BaseHTTPRequestHandler):
                 folder = str(payload.get("folder", "")).strip() or str(download.default_folder())
                 if not url:
                     return json_response(self, {"error": "Paste a link first."}, 400)
-                job = library.start_job(download_job, url, folder)
+                parts = [str(p).strip() for p in payload.get("parts") or []
+                         if re.match(r"^https?://", str(p).strip(), re.I)][:500]
+                job = library.start_job(download_job, url, folder, parts)
                 return json_response(self, {"job": job.id})
 
             if path == "/api/download/reveal":

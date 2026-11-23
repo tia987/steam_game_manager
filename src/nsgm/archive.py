@@ -105,7 +105,7 @@ def scrape(query: str, want: int = 500, timeout: int = 25, progress=None) -> lis
     and no last page to miss. It keeps going until the Archive stops
     handing back a cursor, or until enough items have been collected.
     """
-    fields = "identifier,title,mediatype,downloads,item_size,year"
+    fields = "identifier,title,mediatype,downloads,item_size,year,btih"
     items: list[dict] = []
     cursor = ""
 
@@ -127,6 +127,8 @@ def scrape(query: str, want: int = 500, timeout: int = 25, progress=None) -> lis
                     "identifier": identifier,
                     "mediatype": item.get("mediatype", ""),
                     "year": item.get("year", ""),
+                    "btih": str(item.get("btih") or "").lower(),
+                    "size": _number(item.get("item_size")),
                 }
             )
         if progress:
@@ -137,6 +139,94 @@ def scrape(query: str, want: int = 500, timeout: int = 25, progress=None) -> lis
             break
 
     return items[:want]
+
+
+def _number(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+# archive.org's own trackers. Every item it seeds is announced on them,
+# and the Archive itself is always a seed.
+TRACKERS = ("http://bt1.archive.org:6969/announce", "http://bt2.archive.org:6969/announce")
+
+
+def item_magnet(identifier: str, btih: str) -> str:
+    """The magnet of an item's own torrent, from the hash the search hands over.
+
+    An item's torrent is named after its identifier, so that is the name.
+    The web seed lets a client fetch straight from archive.org as well.
+    """
+    params = [("xt", f"urn:btih:{btih}"), ("dn", identifier)]
+    params += [("tr", tracker) for tracker in TRACKERS]
+    params.append(("ws", DOWNLOAD))
+    return "magnet:?" + urllib.parse.urlencode(params, safe=":/")
+
+
+def listing_query(url: str, timeout: int = 25) -> str:
+    """The search behind a collection or search address, or "" for an item."""
+    query = search_query(url)
+    if query:
+        return query
+    identifier = identifier_of(url)
+    if identifier and is_collection(identifier, timeout):
+        return f"collection:{identifier}"
+    return ""
+
+
+def collection_files(url: str, query: str, want: int = 1000, timeout: int = 25,
+                     progress=None) -> dict:
+    """A collection or search as a list of downloads: one magnet per item.
+
+    Reading the website's HTML for this saw only what its script happened
+    to draw, and every item's loose files besides. The search API hands
+    over each item's torrent hash, so every item gets a magnet without a
+    single extra request, and its files are one click away on its page.
+    """
+    items = scrape(query, want, timeout, progress)
+    candidates = []
+    unseeded = 0
+    for entry in items:
+        if not entry.get("btih"):
+            unseeded += 1
+            continue
+        candidates.append({
+            "url": item_magnet(entry["identifier"], entry["btih"]),
+            "name": entry["name"],
+            "label": f"magnet · {entry['mediatype'] or 'item'}"
+                     + (f" · {entry['year']}" if entry.get("year") else ""),
+            "size": entry.get("size", 0),
+            "score": 60,
+            "usable": False,
+            "kind": "magnet",
+            "mirrors": 0,
+            "item_page": entry["url"],
+            "magnet": {"hash": entry["btih"], "name": entry["identifier"],
+                       "trackers": list(TRACKERS), "size": entry.get("size", 0)},
+        })
+    more = len(items) >= want
+    note = f"{len(candidates)} items from archive.org"
+    if unseeded:
+        note += f"; {unseeded} have no torrent and are left out"
+    if more:
+        note += ". There are more: Scan the whole site reads further."
+    return {
+        "method": "archive.org",
+        "project": query.replace("collection:", "") if query.startswith("collection:") else query,
+        "version": "",
+        "released": "",
+        "page": url,
+        "candidates": candidates,
+        "checksums": [],
+        "note": note,
+        "pages_read": max(1, (len(items) + 99) // 100),
+        "entry_count": 0,
+        "mode": "files",
+        "exhausted": not more,
+        "diagnostics": {},
+    }
 
 
 def collect(url: str, want: int = 500, timeout: int = 25, progress=None) -> dict:
@@ -213,11 +303,12 @@ def item(url: str, timeout: int = 25, want_magnet: bool = True) -> dict:
     # The magnet is not published anywhere; it is derived from the torrent.
     if want_magnet and torrent_url:
         try:
-            info = torrents.read(fetch_bytes(torrent_url, timeout))
+            blob = fetch_bytes(torrent_url, timeout)
+            info = torrents.read(blob)
             candidates.insert(
                 0,
                 {
-                    "url": torrents.magnet(fetch_bytes(torrent_url, timeout)),
+                    "url": torrents.magnet(blob),
                     "name": info["name"] or title,
                     "label": "magnet, derived from the torrent",
                     "size": info["size"],

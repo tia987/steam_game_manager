@@ -70,8 +70,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path, PurePath
 
 from . import (archive, autoinstall, catalog, download, drives, hosters, installers, library,
-               pipeline, placement, proc, scanners, sgdb, sitecatalog, steam, tools, torrentclient,
-               torrents, uninstall)
+               pipeline, placement, proc, scanners, sgdb, sitecatalog, sitesync, steam, tools,
+               torrentclient, torrents, uninstall)
 
 USER_AGENT = "NonSteamGameManager/1.0 (+store)"
 
@@ -417,27 +417,40 @@ def site_game(post: dict, catalogue_id: str) -> dict | None:
         "site_cover": _clean_url(post.get("cover")),
         "size": _clean_size(post.get("size")),
         "download_size": _clean_size(post.get("download_size")),
-        "release": _clean_release(post.get("downloads")),
+        # The post is read again when installing, for links that are
+        # current; keeping thousands of mirror lists here would only make
+        # the shelf slow to load.
+        "torrent": bool((post.get("downloads") or {}).get("torrents")),
     }
 
 
+SITE_PAGES_DEFAULT = 10
+
+
 def _site_pages(settings: dict | None = None) -> int:
+    """How deep to read a release website; 0 means every page it has."""
     settings = settings or library.load_settings()
+    value = settings.get("store_site_pages", SITE_PAGES_DEFAULT)
     try:
-        return max(1, min(50, int(settings.get("store_site_pages") or 5)))
+        value = int(value)
     except (TypeError, ValueError):
-        return 5
+        return SITE_PAGES_DEFAULT
+    return sitesync.ALL_PAGES if value <= 0 else min(value, 100000)
 
 
 def _site_catalogue(source: str, catalogue_id: str, text: str = "") -> dict:
+    """A release website's front page, read now; the rest follows in the background."""
     settings = library.load_settings()
     try:
-        found = sitecatalog.read_site(source, pages=_site_pages(settings), text=text,
-                                      language=settings.get("store_language") or "english")
+        final = source
+        if not text:
+            text, final = sitecatalog.fetch(source)
+        listing = sitecatalog.read_listing(text, final,
+                                           settings.get("store_language") or "english")
     except sitecatalog.SiteError as exc:
         raise StoreError(str(exc)) from exc
     games, seen, skipped = [], set(), 0
-    for post in found["posts"][:MAX_GAMES]:
+    for post in listing["posts"]:
         game = site_game(post, catalogue_id)
         if not game or game["id"] in seen:
             skipped += 1                 # the newest post of a game comes first and wins
@@ -447,8 +460,8 @@ def _site_catalogue(source: str, catalogue_id: str, text: str = "") -> dict:
     if not games:
         raise StoreError("That is a web page, but none of its posts offer downloads that could "
                          "be read. For a JSON catalogue, use the address of the raw file.")
-    return {"name": found["name"], "games": games, "skipped": skipped, "kind": "site",
-            "pages": len(found["pages"])}
+    return {"name": listing["site"], "games": games, "skipped": skipped, "kind": "site",
+            "pages": max(listing["last_page"], 1)}
 
 
 def read_source(source: str, catalogue_id: str) -> dict:
@@ -539,28 +552,38 @@ def load_catalogues(force: bool = False) -> list[dict]:
     with _LOCK:
         cache = _catalogue_cache()
         changed = False
+        language = settings.get("store_language") or "english"
+        depth = _site_pages(settings)
         for entry in clean_catalogue_list(settings.get("store_catalogues")):
             cid, source = entry["id"], entry["source"]
             cached = cache.get(cid) if isinstance(cache.get(cid), dict) else None
+            if (cached or {}).get("kind") == "site" and (cached or {}).get("source") == source \
+                    and sitesync.has_state(cid):
+                out.append(_site_entry(entry, depth, language, force))
+                continue
             stale = (not cached or cached.get("source") != source
-                     or time.time() - cached.get("fetched", 0) > CATALOGUE_HOURS * 3600
-                     or (cached.get("kind") == "site"
-                         and cached.get("site_pages") != _site_pages(settings)))
+                     or cached.get("kind") == "site"          # its state file went missing
+                     or time.time() - cached.get("fetched", 0) > CATALOGUE_HOURS * 3600)
             if entry["enabled"] and (force or stale):
                 try:
                     parsed = read_source(source, cid)
+                    if parsed.get("kind") == "site":
+                        # From now on the site keeps itself up to date.
+                        sitesync.seed(cid, source, parsed["name"], parsed["games"])
+                        cache[cid] = {"fetched": time.time(), "source": source, "kind": "site",
+                                      "name": parsed["name"], "games": [], "error": ""}
+                        changed = True
+                        out.append(_site_entry(entry, depth, language, True))
+                        continue
                     cached = {"fetched": time.time(), "source": source, "name": parsed["name"],
-                              "games": parsed["games"], "error": "",
-                              "kind": parsed.get("kind", "json"),
-                              "site_pages": _site_pages(settings)}
+                              "games": parsed["games"], "error": "", "kind": "json"}
                 except StoreError as exc:
                     # Keep whatever was read last time: a site being down for
                     # an hour should not empty the shelf.
                     old = cached if cached and cached.get("source") == source else {}
                     cached = {"fetched": time.time(), "source": source,
                               "name": old.get("name", ""), "games": old.get("games", []),
-                              "error": str(exc), "kind": old.get("kind", "json"),
-                              "site_pages": _site_pages(settings)}
+                              "error": str(exc), "kind": "json"}
                 cache[cid] = cached
                 changed = True
             cached = cached or {}
@@ -570,6 +593,7 @@ def load_catalogues(force: bool = False) -> list[dict]:
                 "builtin": False,
                 "enabled": entry["enabled"],
                 "source": source,
+                "kind": "json",
                 "error": cached.get("error", "") if entry["enabled"] else "",
                 "games": cached.get("games", []) if entry["enabled"] else [],
             })
@@ -579,6 +603,36 @@ def load_catalogues(force: bool = False) -> list[dict]:
             except OSError:
                 pass
     return out
+
+
+def _site_entry(entry: dict, depth: int, language: str, force: bool) -> dict:
+    """A release website's catalogue: what is on disk now, kept fresh behind the scenes."""
+    cid, source = entry["id"], entry["source"]
+    if entry["enabled"]:
+        sitesync.ensure(cid, source, depth, lambda post, cid=cid: site_game(post, cid),
+                        force=force, language=language)
+    state = sitesync.load(cid, source)
+    live = sitesync.progress(cid)
+    return {
+        "id": cid,
+        "name": entry["name"] or state.get("name") or source,
+        "builtin": False,
+        "enabled": entry["enabled"],
+        "source": source,
+        "kind": "site",
+        "error": state.get("error", "") if entry["enabled"] else "",
+        "games": state.get("games", []) if entry["enabled"] else [],
+        "sync": {
+            "running": bool(live),
+            "phase": live.get("phase", ""),
+            "page": live.get("page", 0),
+            "pages_read": state.get("pages_read", 0),
+            "total_pages": live.get("of") or state.get("total_pages", 0),
+            "complete": bool(state.get("complete")),
+            "depth": depth,
+            "checked": state.get("checked", 0),
+        },
+    }
 
 
 def find_game(gid: str) -> dict | None:
@@ -686,7 +740,8 @@ def detail_art(gid: str) -> dict:
     game = find_game(gid)
     if not game:
         raise StoreError("That game is not in any catalogue.")
-    art = {"cover": game.get("cover", ""), "hero": game.get("hero", ""), "logo": game.get("logo", "")}
+    art = {"cover": game.get("cover", ""), "hero": game.get("hero", ""), "logo": game.get("logo", ""),
+           "blurb": game.get("blurb", "")}
     if art["hero"] and art["logo"]:
         return art
     client = _art_client()
@@ -2201,6 +2256,10 @@ def save_store_settings(payload: dict) -> dict:
         patch["store_keep_seeding"] = bool(payload["keep_seeding"])
     if "catalogues" in payload:
         patch["store_catalogues"] = clean_catalogue_list(payload["catalogues"])
+        before = {c["id"] for c in clean_catalogue_list(
+            library.load_settings().get("store_catalogues"))}
+        for gone in before - {c["id"] for c in patch["store_catalogues"]}:
+            sitesync.forget(gone)
     if "optional_files" in payload:
         patch["store_optional_files"] = bool(payload["optional_files"])
     if "parallel" in payload:
@@ -2208,6 +2267,7 @@ def save_store_settings(payload: dict) -> dict:
             {"store_parallel_downloads": payload["parallel"]})
     if "site_pages" in payload:
         patch["store_site_pages"] = _site_pages({"store_site_pages": payload["site_pages"]})
+        # Deeper than before: the background read carries on from where it stopped.
     if patch:
         library.save_settings(patch)
     return store_settings()
@@ -2222,6 +2282,9 @@ def overview(force: bool = False) -> dict:
         for game in entry["games"]:
             item = dict(game)
             item.pop("release", None)       # mirror lists are for installing, not showing
+            # A site can put thousands of games on the shelf; descriptions
+            # come with a game's page instead, when it is opened.
+            item.pop("blurb", None)
             item["catalogue_name"] = entry["name"]
             item["installable"] = installable(game)
             games.append(item)
@@ -2261,4 +2324,15 @@ def status() -> dict:
         "busy": busy(),
         "embed": embed.MANAGER.current(),
         "steam_running": _steam_running(),
+        "sync": site_progress(),
     }
+
+
+def site_progress() -> dict:
+    """Release websites being read right now: catalogue id -> where it has got to."""
+    out = {}
+    for entry in clean_catalogue_list(library.load_settings().get("store_catalogues")):
+        live = sitesync.progress(entry["id"])
+        if live:
+            out[entry["id"]] = live
+    return out

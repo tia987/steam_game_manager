@@ -541,7 +541,12 @@ def read_listing(text: str, base_url: str, language: str = "english") -> dict:
     articles = _articles(root)
     if not articles:
         articles = [root]
-    posts = [read_post(a, base_url, language) for a in articles]
+    posts = []
+    for article in articles:
+        post = read_post(article, base_url, language)
+        # A pinned post sits on top of the front page whatever its age.
+        post["sticky"] = "sticky" in article.classes
+        posts.append(post)
     # News posts can carry links too (a digest of updates links patches),
     # but they never describe one release with a size of its own.
     posts = [p for p in posts if p["name"] and not (
@@ -550,7 +555,27 @@ def read_listing(text: str, base_url: str, language: str = "english") -> dict:
         posts = [p for p in posts if has_downloads(p)]
     else:
         posts = [p for p in posts if not NEWS_TITLE.search(p["title"])]
-    return {"posts": posts, "next": next_page(root, base_url)}
+    return {"posts": posts, "next": next_page(root, base_url),
+            "last_page": last_page(root), "site": site_name(text)}
+
+
+PAGE_NUMBER = re.compile(r"(?i)(?:/page/|[?&](?:paged|page)=)(\d{1,6})/?(?:[?#]|$)")
+
+
+def last_page(root: Node) -> int:
+    """The highest page number the pagination links to, or 0."""
+    best = 0
+    for node in root.find_all("a"):
+        match = PAGE_NUMBER.search(node.get("href"))
+        if match:
+            best = max(best, int(match.group(1)))
+    return best
+
+
+def site_name(text: str) -> str:
+    match = re.search(r"(?is)<title[^>]*>(.*?)</title>", text or "")
+    title = html.unescape(re.sub(r"\s+", " ", match.group(1))).strip() if match else ""
+    return re.split(r"\s+[-–|—]\s+", title)[0].strip()[:60] if title else ""
 
 
 # --------------------------------------------------------------------------

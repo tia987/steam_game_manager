@@ -721,9 +721,36 @@ press Check.
 A catalogue can also be a website that publishes one release per blog
 post: a cover, a few `Key: value` lines, then a list of download mirrors
 and usually a magnet link. Paste the site's front page (or a category
-page) into the same box and press **Check**. You see how many games were
-found and over how many pages. Settings → *Pages to read from a release
-website* sets how far back it goes (5 pages by default).
+page) into the same box and press **Check**. Only the front page is read
+for that, so it answers at once: you see its games and how many pages the
+site has in all.
+
+**How far back.** Settings → *Pages to read* sets it: 10 pages (about a
+hundred releases) by default, stepping up to 5,000. *Read every page of
+release websites* reads the whole site, however many pages it has.
+
+**Read once, then only what is new.** A site is never read in full
+twice, and the store never waits for it:
+
+- The store opens with what is already kept on disk. Reading happens in
+  the background, and the shelf grows as pages arrive; the catalogue's
+  row in Settings shows how far it has got (*reading page 120 of 825*).
+- The first time, the site is read a page at a time, gently (a pause
+  between pages, and backing off when the site struggles). Progress is
+  saved every ten pages, so closing the app loses nothing: the next start
+  carries on from where it stopped. Raising the depth later also carries
+  on from there instead of starting over. A whole site of 800-odd pages
+  takes roughly a quarter of an hour, once.
+- After that, at most every 30 minutes (or when you press *Refresh all
+  catalogues*), the front page is looked at for new releases. Reading
+  stops at the first release already on the shelf, so that is one
+  request unless more than a page of releases came out since. New ones
+  join the top of the shelf; releases on the pages read whose title
+  changed (a new version) are updated.
+- Each site is kept in its own file, and the shelf holds names, sizes and
+  covers only: descriptions load when a game's page is opened, mirror
+  links are read fresh when you install, and the grid draws tiles as you
+  scroll. A shelf of thousands of games stays quick.
 
 What is read from each post:
 
@@ -883,6 +910,7 @@ offered in the same step so the entry and its artwork go together.
 | Settings and the record of what was added | `%APPDATA%\NonSteamGameManager` on Windows, `~/.config/nonsteam-game-manager` elsewhere |
 | Install queue and history | `installs.json` in the same folder |
 | Store: what it installed, games waiting for Steam | `store.json`, with `store-catalogues.json` and `store-art.json` as caches |
+| Store: each release website read so far | `store-site-<id>.json`, deleted when the catalogue is removed |
 | Steam store look-ups (sizes, SSD needs) | `storeinfo.json`, kept 30 days |
 | A fetched 7-Zip | `tools\7zip` in the same folder |
 | Shortcuts | `<Steam>/userdata/<account>/config/shortcuts.vdf` |

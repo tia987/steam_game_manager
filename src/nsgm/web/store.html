@@ -161,12 +161,24 @@
           or a website that posts one release per page with its download links. The README has the details.</p>
         <div class="rows rows--tight" id="catalogueRows"></div>
 
-        <p class="label">Pages to read from a release website</p>
-        <div class="segmented" id="optSitePages">
-          <button class="seg nav" type="button" data-value="1">1</button>
-          <button class="seg nav" type="button" data-value="5">5</button>
-          <button class="seg nav" type="button" data-value="20">20</button>
-          <button class="seg nav" type="button" data-value="50">50</button>
+        <div class="line">
+          <div>
+            <p class="line__title">Read every page of release websites</p>
+            <p class="line__sub">The whole site is read once, slowly, in the background; after that only
+              new releases are fetched.</p>
+          </div>
+          <button class="toggle nav" id="optAllPages" type="button" role="switch" aria-checked="false"><span></span></button>
+        </div>
+        <div class="line" id="sitePagesLine">
+          <div>
+            <p class="line__title">Pages to read</p>
+            <p class="line__sub">From the newest release back. About ten games a page.</p>
+          </div>
+          <div class="stepper">
+            <button class="btn nav" id="sitePagesLess" type="button" aria-label="Fewer pages">−</button>
+            <span class="stepper__value" id="sitePagesValue">10</span>
+            <button class="btn nav" id="sitePagesMore" type="button" aria-label="More pages">+</button>
+          </div>
         </div>
 
         <p class="label">Add a catalogue</p>

@@ -182,6 +182,7 @@ function applyStatus(status, quiet = false) {
   S.pendingRemove = status.pending_remove || [];
   S.busy = !!status.busy;
   S.steamRunning = !!status.steam_running;
+  noticeSync(status.sync || {});
 
   for (const [id, job] of Object.entries(S.jobs)) {
     const before = S.phases[id];
@@ -200,6 +201,23 @@ function applyStatus(status, quiet = false) {
   if (S.tab === "library") renderLibrary();
   if (S.tab === "downloads") renderDownloads();
   renderInstaller(status.embed || null);
+}
+
+// A release website being read in the background grows the shelf. The
+// grid is redrawn now and then while that happens, never while a game's
+// page or the keyboard is open, so nothing jumps under the person.
+function noticeSync(sync) {
+  const before = S.sync || {};
+  S.sync = sync;
+  const grew = Object.entries(sync).some(([id, now]) => (now.found || 0) > ((before[id] || {}).found || 0));
+  const finished = Object.keys(before).some((id) => !(id in sync));
+  if (S.tab === "settings" && (grew || finished) && S.data) renderSettings();
+  if (!(grew || finished) || !S.data) return;
+  const now = Date.now();
+  if (!finished && now - (S.syncReloaded || 0) < 20000) return;
+  if (S.detail || !$("keyboard").hidden) return;
+  S.syncReloaded = now;
+  loadOverview().catch(() => {});
 }
 
 async function poll() {
@@ -325,12 +343,38 @@ function renderNotices() {
   restoreFocus(box, focusKey);
 }
 
+// Tiles are drawn a screenful at a time: a release website can put
+// thousands of games on the shelf, and building every tile up front made
+// opening the store and every keystroke in search slow.
+const GRID_BATCH = 120;
+
 function renderGrid() {
   const grid = $("grid");
   const focusKey = keyOf(document.activeElement);
   const games = filtered();
   grid.innerHTML = "";
-  for (const game of games) {
+  S.gridGames = games;
+  S.gridShown = 0;
+  // Keep enough drawn to put focus back where it was.
+  const keep = focusKey && focusKey.startsWith("tile:")
+    ? games.findIndex((g) => `tile:${g.id}` === focusKey) + 1 : 0;
+  moreTiles(Math.max(GRID_BATCH, keep));
+  $("gridEmpty").hidden = games.length > 0;
+  $("searchText").textContent = S.query || "Search games";
+  $("searchBox").classList.toggle("has-query", !!S.query);
+  if (!restoreFocus(grid, focusKey) && grid.contains(document.activeElement) === false &&
+      document.activeElement && document.activeElement.closest && document.activeElement.closest("#grid")) {
+    focusFirst();
+  }
+}
+
+function moreTiles(count = GRID_BATCH) {
+  const grid = $("grid");
+  const games = S.gridGames || [];
+  const old = grid.querySelector(".grid__more");
+  if (old) old.remove();
+  const end = Math.min(games.length, S.gridShown + count);
+  for (const game of games.slice(S.gridShown, end)) {
     const tile = make("button", "tile nav");
     tile.type = "button";
     tile.dataset.id = game.id;
@@ -346,15 +390,25 @@ function renderGrid() {
     art.append(badge, bar);
     tile.append(art, make("p", "tile__name", game.name));
     tile.addEventListener("click", () => openDetail(game.id));
+    // Reaching the last drawn row with a controller draws the next batch.
+    tile.addEventListener("focus", () => {
+      if (S.gridShown < (S.gridGames || []).length &&
+          grid.children.length - Array.prototype.indexOf.call(grid.children, tile) < 16) moreTiles();
+    });
     grid.append(tile);
     updateTile(tile, game);
   }
-  $("gridEmpty").hidden = games.length > 0;
-  $("searchText").textContent = S.query || "Search games";
-  $("searchBox").classList.toggle("has-query", !!S.query);
-  if (!restoreFocus(grid, focusKey) && grid.contains(document.activeElement) === false &&
-      document.activeElement && document.activeElement.closest && document.activeElement.closest("#grid")) {
-    focusFirst();
+  S.gridShown = end;
+  if (end < games.length) {
+    const sentinel = make("div", "grid__more");
+    grid.append(sentinel);
+    if ("IntersectionObserver" in window) {
+      if (S.gridObserver) S.gridObserver.disconnect();
+      S.gridObserver = new IntersectionObserver((seen) => {
+        if (seen.some((e) => e.isIntersecting)) moreTiles();
+      }, { rootMargin: "800px" });
+      S.gridObserver.observe(sentinel);
+    }
   }
 }
 
@@ -404,7 +458,7 @@ async function openDetail(id) {
                      game.catalogue_name]) {
     if (part) meta.append(make("span", "", part));
   }
-  $("detailBlurb").textContent = game.blurb || "";
+  $("detailBlurb").textContent = game.blurb || (S.detailArt[id] || {}).blurb || "";
   const warning = [game.needs_data, game.note].filter(Boolean).join(" ");
   $("detailWarn").hidden = !warning;
   $("detailWarn").textContent = warning;
@@ -421,7 +475,10 @@ async function openDetail(id) {
   if (!S.detailArt[id]) {
     try {
       S.detailArt[id] = await api("/api/store/art", { id });
-      if (S.detail === id) showArt(id);
+      if (S.detail === id) {
+        showArt(id);
+        if (S.detailArt[id].blurb) $("detailBlurb").textContent = S.detailArt[id].blurb;
+      }
     } catch (error) {
       S.detailArt[id] = {};
     }
@@ -818,12 +875,15 @@ function renderSettings() {
   for (const [id, value] of [["optRestart", settings.restart], ["optReopen", settings.reopen],
                              ["optGlyphs", settings.glyphs || "auto"],
                              ["optSiteMethod", settings.site_method || "auto"],
-                             ["optSitePages", String(settings.site_pages || 5)],
                              ["optParallel", String(settings.parallel || 2)]]) {
     for (const seg of $(id).querySelectorAll(".seg")) seg.classList.toggle("is-on", seg.dataset.value === value);
   }
   $("optKeep").setAttribute("aria-checked", settings.keep_downloads ? "true" : "false");
   $("optOptional").setAttribute("aria-checked", settings.optional_files ? "true" : "false");
+  const every = Number(settings.site_pages) === 0;
+  $("optAllPages").setAttribute("aria-checked", every ? "true" : "false");
+  $("sitePagesLine").hidden = every;
+  $("sitePagesValue").textContent = every ? "All" : String(settings.site_pages || 10);
   $("optSeed").setAttribute("aria-checked", settings.keep_seeding ? "true" : "false");
   const torrent = settings.torrent || {};
   $("torrentState").textContent = torrent.label
@@ -869,6 +929,7 @@ function renderSettings() {
                                                   : "Built in · switched off, so its games are hidden")
       : !entry.enabled ? `Switched off · ${entry.source}`
       : entry.error ? `${entry.error} · ${entry.source}`
+      : entry.kind === "site" ? `${plural(entry.count, "game", "games")} · ${siteProgress(entry)} · ${entry.source}`
       : `${plural(entry.count, "game", "games")} · ${entry.source}`;
     const sub = make("p", "row__sub", detail);
     if (entry.error) sub.classList.add("row__sub--warn");
@@ -884,6 +945,18 @@ function renderSettings() {
     rows.append(row);
   }
   restoreFocus($("view-settings"), focusKey);
+}
+
+function siteProgress(entry) {
+  const sync = { ...(entry.sync || {}), ...((S.sync || {})[entry.id] || {}) };
+  const total = sync.total_pages || sync.of || 0;
+  const of = total ? ` of ${total}` : "";
+  if (sync.running || sync.phase) {
+    return sync.phase === "new" ? "checking for new releases"
+      : `reading page ${sync.page || 1}${of}`;
+  }
+  if (sync.complete) return `all ${plural(sync.pages_read || total, "page", "pages")} read`;
+  return `${plural(sync.pages_read || 0, "page", "pages")}${of} read`;
 }
 
 async function saveSettings(patch) {
@@ -930,7 +1003,7 @@ async function checkCatalogue() {
     text.innerHTML = "";
     text.append(make("strong", "", found.name || "Untitled catalogue"),
       document.createTextNode(` · ${plural(found.count, "game", "games")}`
-        + (found.kind === "site" ? ` from ${plural(found.pages || 1, "page", "pages")} of the site` : "")
+        + (found.kind === "site" ? ` on the front page, ${plural(found.pages || 1, "page", "pages")} in all` : "")
         + `, such as ${found.sample.join(", ")}`
         + (found.skipped ? `. ${found.skipped} entries could not be used.` : ".")));
     $("catalogueAdd").hidden = false;
@@ -1729,14 +1802,27 @@ function wire() {
     seg.dataset.key = `optParallel:${seg.dataset.value}`;
     seg.addEventListener("click", () => saveSettings({ parallel: Number(seg.dataset.value) }));
   }
-  for (const seg of $("optSitePages").querySelectorAll(".seg")) {
-    seg.dataset.key = `optSitePages:${seg.dataset.value}`;
-    seg.addEventListener("click", async () => {
-      if (await saveSettings({ site_pages: Number(seg.dataset.value) })) {
-        toast("Release websites are read again at the next refresh.");
-      }
-    });
-  }
+  const PAGE_STEPS = [1, 2, 3, 5, 10, 15, 20, 30, 50, 75, 100, 150, 200, 300, 500, 750, 1000, 2000, 5000];
+  const stepPages = async (direction) => {
+    const now = Number(S.data.settings.site_pages) || 10;
+    const index = PAGE_STEPS.findIndex((step) => step >= now);
+    const at = index < 0 ? PAGE_STEPS.length - 1 : index;
+    const next = PAGE_STEPS[Math.max(0, Math.min(PAGE_STEPS.length - 1,
+      PAGE_STEPS[at] === now ? at + direction : (direction > 0 ? at : at - 1)))];
+    if (next !== now && await saveSettings({ site_pages: next })) loadOverview();
+  };
+  $("sitePagesLess").dataset.key = "sitePagesLess";
+  $("sitePagesLess").addEventListener("click", () => stepPages(-1));
+  $("sitePagesMore").dataset.key = "sitePagesMore";
+  $("sitePagesMore").addEventListener("click", () => stepPages(1));
+  $("optAllPages").dataset.key = "optAllPages";
+  $("optAllPages").addEventListener("click", async () => {
+    const every = Number(S.data.settings.site_pages) === 0;
+    if (await saveSettings({ site_pages: every ? 10 : 0 })) {
+      if (!every) toast("Reading the whole site in the background. Games appear as pages arrive.");
+      loadOverview();
+    }
+  });
   $("optOptional").dataset.key = "optOptional";
   $("optOptional").addEventListener("click", () => saveSettings({ optional_files: !S.data.settings.optional_files }));
   $("optKeep").dataset.key = "optKeep";

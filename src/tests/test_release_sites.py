@@ -264,8 +264,8 @@ class ReleaseSiteTests(unittest.TestCase):
     def test_source_box_accepts_the_site(self):
         checked = store.test_source(self.base + "/")
         self.assertEqual(checked["kind"], "site")
-        self.assertEqual(checked["count"], 2)
-        self.assertEqual(checked["pages"], 2)
+        self.assertEqual(checked["count"], 1)          # the front page only: it answers at once
+        self.assertEqual(checked["pages"], 2)          # and says how many pages there are
 
     def _game(self, slug: str) -> dict:
         posts = sitecatalog.read_site(self.base + "/", pages=5)["posts"]
@@ -279,7 +279,8 @@ class ReleaseSiteTests(unittest.TestCase):
         folder = Path(tempfile.mkdtemp(dir=TEMP))
         job = store.StoreJob(id=game["id"], name=game["name"])
         settings = {"store_site_method": "direct"}
-        target = store._download_release(job, game, game["release"]["mirrors"], folder, settings)
+        mirrors = sitecatalog.read_one(game["page"])["downloads"]["mirrors"]
+        target = store._download_release(job, game, mirrors, folder, settings)
         names = sorted(p.name for p in target.iterdir() if not p.name.startswith("."))
         self.assertEqual(names, ["aqueduct.part1.rar", "aqueduct.part2.rar",
                                  "selective-english.bin"])
@@ -287,14 +288,14 @@ class ReleaseSiteTests(unittest.TestCase):
 
         # A second attempt finds everything done and fetches nothing.
         HITS.clear()
-        store._download_release(job, game, game["release"]["mirrors"], folder, settings)
+        store._download_release(job, game, mirrors, folder, settings)
         self.assertFalse([h for h in HITS if h.startswith("/files/")])
 
         # A file cut off half way is continued, not restarted.
         (target / "aqueduct.part1.rar").unlink()
         partial = target / "aqueduct.part1.rar.part"
         partial.write_bytes(FILES["aqueduct.part1.rar"][:1000])
-        store._download_release(job, game, game["release"]["mirrors"], folder, settings)
+        store._download_release(job, game, mirrors, folder, settings)
         self.assertEqual((target / "aqueduct.part1.rar").read_bytes(), FILES["aqueduct.part1.rar"])
 
     def test_archive_with_setup_is_unpacked_before_installing(self):

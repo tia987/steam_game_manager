@@ -250,10 +250,26 @@ def _clean_game(raw, catalogue_id: str) -> dict | None:
 
 def parse_catalogue(blob, catalogue_id: str) -> dict:
     """Read a catalogue file into clean game records."""
+    if isinstance(blob, bytes):
+        try:
+            blob = blob.decode("utf-8-sig")     # Notepad may put a byte-order mark first
+        except UnicodeDecodeError as exc:
+            raise StoreError("That is not a text file, so it cannot be a catalogue.") from exc
+    text = blob.lstrip("\ufeff").strip()
+    if not text:
+        raise StoreError("That file is empty.")
+    if text.startswith("<"):
+        # The usual mistake: the address of a page that shows the file,
+        # not of the file itself.
+        raise StoreError("That address gives a web page, not the catalogue file itself. On "
+                         "GitHub, GitLab, Gist or Pastebin, open the file and copy the address "
+                         "of its Raw button. A Dropbox or Google Drive share link works as it is.")
     try:
-        data = json.loads(blob)
-    except (ValueError, UnicodeDecodeError) as exc:
-        raise StoreError(f"That is not valid JSON ({exc}).") from exc
+        data = json.loads(text)
+    except ValueError as exc:
+        where = f" (line {exc.lineno}, column {exc.colno})" if hasattr(exc, "lineno") else ""
+        raise StoreError(f"That file is not valid JSON{where}: {getattr(exc, 'msg', exc)}. A "
+                         "missing or extra comma is the usual cause; jsonlint.com shows where.") from exc
     if isinstance(data, list):
         data = {"games": data}
     if not isinstance(data, dict) or not isinstance(data.get("games"), list):
@@ -269,19 +285,52 @@ def parse_catalogue(blob, catalogue_id: str) -> dict:
     return {"name": _clean_text(data.get("name"), 60), "games": games, "skipped": skipped}
 
 
-def _raw_github(url: str) -> str:
-    """A github.com/.../blob/... page address, turned into the file itself."""
-    found = re.match(r"^https://github\.com/([^/]+)/([^/]+)/blob/(.+)$", url, re.I)
-    if found:
-        return f"https://raw.githubusercontent.com/{found.group(1)}/{found.group(2)}/{found.group(3)}"
+def direct_link(url: str) -> str:
+    """The file itself, from the address of a page that only shows it.
+
+    People copy whatever is in the address bar, and on most sites that is
+    a page around the file rather than the file.
+    """
+    rules = (
+        # GitHub: a file's page, and a gist's page
+        (r"^https://github\.com/([^/]+)/([^/]+)/blob/(.+)$",
+         r"https://raw.githubusercontent.com/\1/\2/\3"),
+        (r"^https://gist\.github\.com/([^/]+)/([0-9a-f]+)/?$",
+         r"https://gist.githubusercontent.com/\1/\2/raw"),
+        # GitLab and Codeberg
+        (r"^(https://gitlab\.com/.+?)/-/blob/(.+)$", r"\1/-/raw/\2"),
+        (r"^(https://codeberg\.org/[^/]+/[^/]+)/src/(.+)$", r"\1/raw/\2"),
+        # Pastebin
+        (r"^https://pastebin\.com/(?!raw/)([A-Za-z0-9]+)/?$", r"https://pastebin.com/raw/\1"),
+        # Google Drive
+        (r"^https://drive\.google\.com/file/d/([^/?#]+).*$",
+         r"https://drive.google.com/uc?export=download&id=\1"),
+        (r"^https://drive\.google\.com/open\?id=([^&#]+).*$",
+         r"https://drive.google.com/uc?export=download&id=\1"),
+    )
+    for pattern, replacement in rules:
+        if re.match(pattern, url, re.I):
+            return re.sub(pattern, replacement, url, flags=re.I)
+    # Dropbox: the same address, asking for the file rather than a preview
+    if re.match(r"^https://(www\.)?dropbox\.com/", url, re.I):
+        url = re.sub(r"([?&])(dl|raw)=0", r"\1dl=1", url)
+        return url if re.search(r"[?&](dl|raw)=1", url) else url + ("&" if "?" in url else "?") + "dl=1"
     return url
+
+
+def clean_source(source: str) -> str:
+    """A catalogue address or path as typed or pasted: quotes and file:// gone."""
+    source = source.strip().strip('"').strip("'").strip()
+    if source.lower().startswith("file:"):
+        source = urllib.request.url2pathname(urllib.parse.urlparse(source).path)
+    return source
 
 
 def fetch_source(source: str) -> bytes:
     """The bytes of a catalogue, from a web address or a file on disk."""
-    source = source.strip()
+    source = clean_source(source)
     if re.match(r"^https?://", source, re.I):
-        request = urllib.request.Request(_raw_github(source), headers={"User-Agent": USER_AGENT})
+        request = urllib.request.Request(direct_link(source), headers={"User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(request, timeout=15) as response:
                 blob = response.read(MAX_CATALOGUE_BYTES + 1)
@@ -329,7 +378,7 @@ def clean_catalogue_list(items) -> list[dict]:
     for item in items if isinstance(items, list) else []:
         if not isinstance(item, dict):
             continue
-        source = str(item.get("source", "")).strip()[:2000]
+        source = clean_source(str(item.get("source", "")))[:2000]
         if not source or source.lower() in seen:
             continue
         seen.add(source.lower())

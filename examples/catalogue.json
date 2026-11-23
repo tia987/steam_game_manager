@@ -1,0 +1,21 @@
+{
+  "name": "Example catalogue",
+  "games": [
+    {
+      "name": "Taisei Project",
+      "repo": "taisei-project/taisei",
+      "tags": ["Shooter", "Bullet hell"],
+      "licence": "MIT",
+      "site": "https://taisei-project.org",
+      "blurb": "A fan-made bullet hell shooter in the style of the Touhou Project, with its own story and music."
+    },
+    {
+      "name": "Pixel Wheels",
+      "repo": "agateau/pixelwheels",
+      "tags": ["Racing", "Local multiplayer"],
+      "licence": "GPL-3.0",
+      "site": "https://agateau.com/projects/pixelwheels",
+      "blurb": "Top-down retro racing with weapons and up to four players on one screen."
+    }
+  ]
+}

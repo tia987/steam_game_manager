@@ -660,8 +660,21 @@ The open-source catalogue is always there. Add your own under Settings →
 Catalogues: paste a web address or a file path and press **Check**. The
 file is read and you see its name, its size and a few of its games
 before anything is saved. Catalogues on the web are re-read every six
-hours, or when you press *Refresh all catalogues*. A `github.com/…/blob/…`
-page address is turned into the raw file automatically.
+hours, or when you press *Refresh all catalogues*.
+
+The address must lead to the file itself, not to a page showing it.
+Share and page links from GitHub, Gist, GitLab, Codeberg, Pastebin,
+Google Drive and Dropbox are turned into the file's own address
+automatically; for anywhere else, use the site's *Raw* or *Download*
+link. A path copied with Windows' *Copy as path* works as it is, quotes
+included.
+
+To try it, add this example, which has two games that are not in the
+built-in list:
+
+```
+https://github.com/tia987/steam_game_manager/blob/main/examples/catalogue.json
+```
 
 A catalogue is a JSON file:
 

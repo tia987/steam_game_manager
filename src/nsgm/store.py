@@ -1064,12 +1064,10 @@ def _release_by_torrent(job: StoreJob, game: dict, swarm: list, home: Path, sett
 
     patience = Patience() if fallback else None
     problems = []
-    for number, item in enumerate(swarm[:3]):
-        last = number == min(len(swarm), 3) - 1
+    for item in swarm[:3]:
         try:
             got = _torrent_download(job, item["url"], home / "torrent", settings,
-                                    check_name=False, skip=skip,
-                                    patience=patience if (fallback or not last) else None)
+                                    check_name=False, skip=skip, patience=patience)
         except StoreError as exc:
             problems.append(str(exc))
             continue

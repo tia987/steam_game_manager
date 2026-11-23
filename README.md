@@ -610,6 +610,50 @@ anything is installed, with the reason shown. Downloads go to
 *Keep downloaded files* is on. An interrupted download carries on where
 it stopped.
 
+### Downloading over BitTorrent
+
+A catalogue can give a magnet link or a `.torrent` address instead of a
+direct download. The store has no BitTorrent engine of its own; it uses
+Transmission or qBittorrent running on the same PC, and drives it the
+whole way so you never open it:
+
+1. **Finding it.** If no torrent client is set up, the store looks for
+   one on its usual port (Transmission 9091, qBittorrent 8080) and keeps
+   the one it finds. Settings → *BitTorrent* shows which, and *Look for
+   it* checks again. The one thing it cannot do is switch on the
+   client's remote access, which each client keeps off until you turn it
+   on once: Transmission under Edit → Preferences → Remote → *Allow
+   remote access*, qBittorrent under Options → Web UI (tick *Bypass
+   authentication for clients on localhost* to skip the password).
+2. **Downloading.** The torrent is added with the store's download folder
+   as its destination. Progress, speed and time left show in the store
+   like any other download. Cancelling removes it from the client along
+   with its partial files.
+3. **Installing.** When it completes, the game is chosen out of what
+   arrived (the full game's installer or folder, never a bundled patch,
+   update or DLC installer) and installed as usual.
+4. **Tidying up.** The torrent is removed from the client and the
+   downloaded files deleted. Turn on *Keep sharing after installing* to
+   leave it seeding instead.
+
+### Uninstalling
+
+**Uninstall** is on a game's page and on each Library row. One
+confirmation, then:
+
+- If the game installed itself into Programs and Features, its own
+  uninstaller runs, quietly where its maker allows, otherwise held in the
+  store and worked with the controller like an installer. The entry is
+  matched by where it is installed, never by name.
+- Its folder is deleted. Only a folder inside one of your library
+  folders is ever deleted, never a library folder itself or anything
+  reached through a link; anything else is reported and left.
+- It leaves Steam with its artwork. With Steam open, that waits for the
+  next Steam restart, alongside any new games, under the same setting.
+
+Saved games are not touched. Most games keep them in your user folders
+(Documents, AppData, Saved Games), not in the install folder.
+
 ### Catalogues
 
 The open-source catalogue is always there. Add your own under Settings →
@@ -651,8 +695,8 @@ A bare list of games works too. Per game:
 | `name` | required |
 | `repo` | a GitHub `owner/name`: the latest release, with the file chosen for this computer as the Open source tab does |
 | `asset` | with `repo`, a regular expression the file name must match, for projects that publish several builds |
-| `downloads` | direct links keyed `windows`, `linux` or `mac`, or `any` |
-| `download` | one direct link for every system |
+| `downloads` | links keyed `windows`, `linux` or `mac`, or `any`: web addresses, `.torrent` addresses or magnet links |
+| `download` | one link for every system; `magnet` and `torrent` are accepted as other names for it |
 | `tags`, `blurb`, `licence`, `site` | shown on the game's page; tags become filter chips |
 | `note`, `needs_data` | a warning shown in amber before installing |
 | `cover`, `hero`, `logo`, `wide` | artwork for the store and for Steam; without them SteamGridDB is asked, if you have a key |

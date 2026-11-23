@@ -12,7 +12,7 @@
 const $ = (id) => document.getElementById(id);
 const TOKEN = (document.querySelector('meta[name="nsgm-token"]') || {}).content || "";
 const TABS = ["discover", "library", "downloads", "settings"];
-const ACTIVE = ["resolving", "downloading", "installing", "waiting", "adding"];
+const ACTIVE = ["resolving", "downloading", "installing", "waiting", "adding", "uninstalling"];
 
 const S = {
   data: null,
@@ -27,6 +27,7 @@ const S = {
   jobs: {},
   installed: {},
   pending: [],
+  pendingRemove: [],
   busy: false,
   embed: null,
   steamRunning: false,
@@ -126,6 +127,7 @@ function gameState(game) {
     const label = job.phase === "downloading"
       ? (job.progress >= 0 ? `Downloading ${Math.round(job.progress * 100)}%` : "Downloading")
       : job.phase === "resolving" ? "Starting"
+      : job.phase === "uninstalling" ? "Uninstalling"
       : job.phase === "adding" ? "Adding to Steam" : "Installing";
     return { kind: "busy", label, message: job.message, progress: job.progress, job };
   }
@@ -177,6 +179,7 @@ function applyStatus(status, quiet = false) {
   S.jobs = status.jobs || {};
   S.installed = status.installed || {};
   S.pending = status.pending || [];
+  S.pendingRemove = status.pending_remove || [];
   S.busy = !!status.busy;
   S.steamRunning = !!status.steam_running;
 
@@ -506,6 +509,9 @@ function renderDetailState() {
   } else if (state.kind === "installed" && state.record && state.record.steam === "added") {
     actions.append(button("Play", "btn--primary btn--big", () => play(id), "d:play"));
   }
+  if (state.record && ["installed", "pending"].includes(state.kind)) {
+    actions.append(button("Uninstall", "btn--big btn--quiet", () => confirmUninstall(id), "d:uninstall"));
+  }
   if (hadFocus && !$("detail").hidden) focusFirst();
 }
 
@@ -532,6 +538,32 @@ async function install(id) {
     S.phases[id] = job.phase;
     applyStatus({ ...currentStatus(), jobs: S.jobs }, true);
     toast(`Getting ${job.name}`);
+    poll();
+  } catch (error) {
+    toast(error.message, "bad");
+  }
+}
+
+function confirmUninstall(id) {
+  const record = S.installed[id];
+  if (!record) return;
+  const steamLine = record.steam === "added"
+    ? (S.steamRunning ? " It leaves your Steam library the next time Steam restarts." : " It leaves your Steam library too.")
+    : "";
+  ask(`Uninstall ${record.name}?`,
+    `The game is removed from this PC.${steamLine} Saved games kept in your user folders are left alone.`, [
+      { label: "Uninstall", run: () => uninstall(id) },
+      { label: "Keep it", primary: true, run: () => {} },
+    ]);
+}
+
+async function uninstall(id) {
+  try {
+    const { job } = await api("/api/store/uninstall", { id });
+    S.jobs[id] = job;
+    S.phases[id] = job.phase;
+    applyStatus({ ...currentStatus(), jobs: S.jobs }, true);
+    toast(`Uninstalling ${job.name}`);
     poll();
   } catch (error) {
     toast(error.message, "bad");
@@ -574,20 +606,19 @@ async function chooseLibrary(path) {
 }
 
 function currentStatus() {
-  return { jobs: S.jobs, installed: S.installed, pending: S.pending, busy: S.busy,
+  return { jobs: S.jobs, installed: S.installed, pending: S.pending, pending_remove: S.pendingRemove, busy: S.busy,
            embed: S.embed, steam_running: S.steamRunning };
 }
 
 // ------------------------------------------------------------------ Steam restart and leaving
 
 function restartText() {
-  const count = S.pending.length;
   const where = S.data.settings.reopen === "library" ? "" : " in Big Picture";
-  return `Steam closes, ${plural(count, "game is", "games are")} added, and Steam opens again${where}.`;
+  return `Steam closes, ${pendingSentence()}, and Steam opens again${where}.`;
 }
 
 function restartFlow(relaunch) {
-  if (!S.pending.length) {
+  if (!pendingCount()) {
     toast("Nothing is waiting for Steam.");
     return;
   }
@@ -636,9 +667,9 @@ function leave() {
 }
 
 function leaveSteamStep() {
-  if (S.pending.length && S.steamRunning) {
-    ask(`${plural(S.pending.length, "game is", "games are")} ready for Steam`,
-      `Steam has to restart to show ${S.pending.length === 1 ? "it" : "them"}. ${restartText()}`, [
+  if (pendingCount() && S.steamRunning) {
+    ask("Steam needs a restart",
+      `Steam only notices changes to its library when it starts. ${restartText()}`, [
         { label: "Restart Steam and leave", primary: true, run: () => restartSteam(false, false).then(quit) },
         { label: "Leave without restarting", run: quit },
         { label: "Stay in the store", run: () => {} },
@@ -695,15 +726,18 @@ function renderLibrary() {
     const actions = make("div", "row__actions");
     if (record.steam === "added") actions.append(button("Play", "btn--primary", () => play(id), `lib:play:${id}`));
     if (S.byId.has(id)) actions.append(button("Details", "", () => openDetail(id), `lib:info:${id}`));
+    if (state.kind === "busy") {
+      body.querySelector(".row__sub").textContent = state.label;
+    } else {
+      actions.append(button("Uninstall", "btn--quiet", () => confirmUninstall(id), `lib:remove:${id}`));
+    }
     row.append(rowThumb(game), body, actions);
     box.append(row);
   }
   $("libraryEmpty").hidden = entries.length > 0;
-  const waiting = S.pending.length;
+  const waiting = pendingCount();
   $("libraryBanner").hidden = !waiting;
-  $("libraryBannerText").textContent = waiting
-    ? `${plural(waiting, "game is", "games are")} waiting for Steam to restart: ${S.pending.join(", ")}.`
-    : "";
+  $("libraryBannerText").textContent = waiting ? `When Steam restarts, ${pendingSentence()}.` : "";
   restoreFocus($("view-library"), focusKey);
 }
 
@@ -759,11 +793,20 @@ function renderDownloadCount() {
   badge.textContent = active;
 }
 
+function pendingCount() { return S.pending.length + S.pendingRemove.length; }
+
+function pendingSentence() {
+  const parts = [];
+  if (S.pending.length) parts.push(`${S.pending.join(", ")} ${S.pending.length === 1 ? "goes" : "go"} into Steam`);
+  if (S.pendingRemove.length) parts.push(`${S.pendingRemove.join(", ")} ${S.pendingRemove.length === 1 ? "leaves" : "leave"} it`);
+  return parts.join("; ");
+}
+
 function renderPending() {
   const chip = $("pendingChip");
-  const count = S.pending.length;
+  const count = pendingCount();
   chip.hidden = !count;
-  chip.textContent = count ? `${plural(count, "game", "games")} waiting for Steam` : "";
+  chip.textContent = count ? `Steam restart needed (${count})` : "";
 }
 
 // ------------------------------------------------------------------ settings
@@ -775,6 +818,11 @@ function renderSettings() {
     for (const seg of $(id).querySelectorAll(".seg")) seg.classList.toggle("is-on", seg.dataset.value === value);
   }
   $("optKeep").setAttribute("aria-checked", settings.keep_downloads ? "true" : "false");
+  $("optSeed").setAttribute("aria-checked", settings.keep_seeding ? "true" : "false");
+  const torrent = settings.torrent || {};
+  $("torrentState").textContent = torrent.label
+    ? `${torrent.label} at ${torrent.url.replace(/^https?:\/\//, "")}. Games shared over BitTorrent download through it, and it is tidied up after each install.`
+    : "None found yet. Start Transmission or qBittorrent with remote access on, and the store finds it by itself.";
 
   const waitingSelf = S.pending.includes("Game Store");
   $("addSelf").textContent = S.data.store_shortcut ? "Add again" : waitingSelf ? "Waiting for restart" : "Add to Steam";
@@ -1644,6 +1692,22 @@ function wire() {
       });
     }
   }
+  $("optSeed").dataset.key = "optSeed";
+  $("optSeed").addEventListener("click", () => saveSettings({ keep_seeding: !S.data.settings.keep_seeding }));
+  $("torrentLook").dataset.key = "torrentLook";
+  $("torrentLook").addEventListener("click", async () => {
+    $("torrentLook").disabled = true;
+    try {
+      const found = await api("/api/store/torrent-client", {});
+      S.data.settings.torrent = { label: found.label, url: found.url };
+      renderSettings();
+      toast(found.message, found.label ? "good" : "bad");
+    } catch (error) {
+      toast(error.message, "bad");
+    } finally {
+      $("torrentLook").disabled = false;
+    }
+  });
   $("optKeep").dataset.key = "optKeep";
   $("optKeep").addEventListener("click", () => saveSettings({ keep_downloads: !S.data.settings.keep_downloads }));
   $("addSelf").dataset.key = "addSelf";

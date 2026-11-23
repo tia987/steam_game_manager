@@ -61,8 +61,8 @@ import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from . import (autoinstall, catalog, download, drives, installers, library, proc, scanners, sgdb,
-               steam)
+from . import (archive, autoinstall, catalog, download, drives, installers, library, proc,
+               scanners, sgdb, steam, torrentclient, torrents, uninstall)
 
 USER_AGENT = "NonSteamGameManager/1.0 (+store)"
 
@@ -134,6 +134,7 @@ def load_state() -> dict:
     state = _read_json(_state_path(), {})
     state.setdefault("installed", {})     # game id -> what was installed and where
     state.setdefault("pending", [])       # game records waiting for Steam to close
+    state.setdefault("pending_remove", [])    # {"short_id", "title"} to take out of Steam
     state.setdefault("store_shortcut", 0)
     return state
 
@@ -163,6 +164,19 @@ def _clean_url(value) -> str:
     if len(text) < 2000 and re.match(r"^https?://\S+$", text, re.I):
         return text
     return ""
+
+
+def _clean_link(value) -> str:
+    """A download link: a web address, or a magnet link for BitTorrent."""
+    text = str(value or "").strip()
+    if len(text) < 4000 and re.match(r"(?i)^magnet:\?\S*xt=urn:btih:[a-z0-9]{32,40}", text):
+        return text
+    return _clean_url(text)
+
+
+def is_torrent(url: str) -> bool:
+    lowered = url.lower()
+    return lowered.startswith("magnet:") or urllib.parse.urlparse(lowered).path.endswith(".torrent")
 
 
 def _clean_text(value, limit: int) -> str:
@@ -196,10 +210,11 @@ def _clean_game(raw, catalogue_id: str) -> dict | None:
     listed = raw.get("downloads")
     if isinstance(listed, dict):
         for key, value in listed.items():
-            url = _clean_url(value)
+            url = _clean_link(value)
             if url:
                 downloads[str(key).strip().lower()[:12]] = url
-    single = _clean_url(raw.get("download") or raw.get("url"))
+    single = _clean_link(raw.get("download") or raw.get("url") or raw.get("torrent")
+                         or raw.get("magnet"))
     if single:
         downloads.setdefault("any", single)
 
@@ -493,7 +508,7 @@ def detail_art(gid: str) -> dict:
 # installing
 # --------------------------------------------------------------------------
 
-ACTIVE_PHASES = ("resolving", "downloading", "installing", "waiting", "adding")
+ACTIVE_PHASES = ("resolving", "downloading", "installing", "waiting", "adding", "uninstalling")
 
 
 @dataclass
@@ -686,18 +701,24 @@ def _install_steps(job: StoreJob, game: dict) -> None:
         job.message = (f"{mb:,.0f} MB of {total / 1048576:,.0f} MB" if total
                        else f"{mb:,.0f} MB")
 
-    # A direct link names its file before anything is fetched, and a server
-    # may still rename it on the way; both are checked.
-    problem = _not_the_game(Path(urllib.parse.urlparse(url).path).name)
-    if problem:
-        raise StoreError(problem)
-    result = download.download(url, folder, progress=progress)
-    if job.cancel:
-        raise Stopped()
-    problem = _not_the_game(result["name"])
-    if problem:
-        _tidy(Path(result["path"]), folder, {"store_keep_downloads": False})
-        raise StoreError(problem)
+    shared = None                  # (client, info hash) for a BitTorrent download
+    if is_torrent(url):
+        path, client, info_hash = _torrent_download(job, url, folder, settings)
+        result = {"path": str(path), "name": path.name}
+        shared = (client, info_hash)
+    else:
+        # A direct link names its file before anything is fetched, and a
+        # server may still rename it on the way; both are checked.
+        problem = _not_the_game(Path(urllib.parse.urlparse(url).path).name)
+        if problem:
+            raise StoreError(problem)
+        result = download.download(url, folder, progress=progress)
+        if job.cancel:
+            raise Stopped()
+        problem = _not_the_game(result["name"])
+        if problem:
+            _tidy(Path(result["path"]), folder, {"store_keep_downloads": False})
+            raise StoreError(problem)
 
     job.phase, job.progress, job.message = "installing", -1.0, "Waiting its turn"
     task = autoinstall.QUEUE.add(result["path"], name=game["name"], mode="quiet",
@@ -720,7 +741,12 @@ def _install_steps(job: StoreJob, game: dict) -> None:
         except Exception as exc:          # installed is installed, whatever Steam says
             record["steam"], record["steam_error"] = "failed", str(exc)
     _change_state(lambda state: state["installed"].__setitem__(game["id"], record))
-    _tidy(Path(result["path"]), folder, settings)
+    if shared and settings.get("store_keep_seeding"):
+        pass                       # left in the torrent client, still being shared
+    else:
+        if shared:
+            _forget_torrent(*shared)
+        _tidy(Path(result["path"]), folder, settings)
 
     job.phase, job.finished = "done", time.time()
     job.message = {
@@ -731,6 +757,301 @@ def _install_steps(job: StoreJob, game: dict) -> None:
     }.get(record["steam"], "Installed.")
     if record["steam"] == "pending" and settings.get("store_restart") == "now":
         threading.Thread(target=_restart_when_idle, daemon=True).start()
+
+
+# --------------------------------------------------------------------------
+# BitTorrent
+# --------------------------------------------------------------------------
+
+def torrent_client(settings: dict | None = None, look: bool = True):
+    """The torrent client to use: the one set up, or one found running.
+
+    Finding one saves it, so the person never has to fill in the settings
+    for a client that is sitting there on its default port.
+    """
+    settings = settings or library.load_settings()
+    configured = settings.get("torrent_client") or {}
+    client = torrentclient.from_settings(configured)
+    if client is not None or not look:
+        return client
+    found = torrentclient.detect()
+    if found and not found.get("needs_login"):
+        library.save_settings({"torrent_client": {"kind": found["kind"], "url": found["url"],
+                                                  "username": "", "password": ""}})
+        return torrentclient.from_settings(found)
+    if found:
+        raise StoreError(f"{found['label']} is running but wants a password. Put it in the main "
+                         "app's Settings under Torrent client, then press Try again.")
+    raise StoreError("This game is shared over BitTorrent, which needs Transmission or "
+                     "qBittorrent running on this PC with remote access on. In Transmission: "
+                     "Edit → Preferences → Remote → Allow remote access. In "
+                     "qBittorrent: Options → Web UI. Then press Try again.")
+
+
+def torrent_info() -> dict:
+    """The client the store would use, for Settings, without probing the network."""
+    client = torrent_client(look=False)
+    if client is None:
+        return {"label": "", "url": ""}
+    return {"label": client.label,
+            "url": getattr(client, "base", "") or getattr(client, "endpoint", "")}
+
+
+def look_for_torrent_client() -> dict:
+    found = torrentclient.detect()
+    if found and not found.get("needs_login"):
+        library.save_settings({"torrent_client": {"kind": found["kind"], "url": found["url"],
+                                                  "username": "", "password": ""}})
+        return {**torrent_info(), "message": f"Found {found['label']} {found['version']}".strip()}
+    current = torrent_info()
+    if found:
+        return {**current, "message": f"{found['label']} is running but wants a password; "
+                                      "enter it in the main app's Settings."}
+    if current["label"]:
+        return {**current, "message": f"Nothing answered on the usual ports, so the "
+                                      f"{current['label']} set up in Settings stays in use."}
+    return {**current, "message": "No torrent app is running with remote access on."}
+
+
+def _speed(rate: int) -> str:
+    return f"{rate / 1048576:.1f} MB/s" if rate >= 1048576 else f"{rate // 1024} KB/s"
+
+
+def _eta(seconds: int) -> str:
+    if seconds <= 0 or seconds > 30 * 86400:
+        return ""
+    if seconds < 90:
+        return "under 2 minutes left"
+    if seconds < 5400:
+        return f"{round(seconds / 60)} minutes left"
+    return f"{seconds / 3600:.1f} hours left"
+
+
+def _torrent_download(job: StoreJob, url: str, folder: Path, settings: dict):
+    """Have the torrent client fetch it into the store's folder; wait for it."""
+    client = torrent_client(settings)
+    magnet, blob, name = "", b"", ""
+    if url.lower().startswith("magnet:"):
+        magnet = url
+        info_hash = torrentclient.info_hash(url)
+        name = urllib.parse.unquote_plus(
+            (urllib.parse.parse_qs(url.split("?", 1)[-1]).get("dn") or [""])[0])
+    else:
+        try:
+            blob = archive.fetch_bytes(url)
+            info = torrents.read(blob)
+        except (OSError, torrents.TorrentError) as exc:
+            raise StoreError(f"The .torrent file could not be read ({exc}).") from exc
+        info_hash, name = info["hash"], info.get("name", "")
+    if not info_hash:
+        raise StoreError("That magnet link does not say which torrent it is.")
+    problem = _not_the_game(name) if name else ""
+    if problem:
+        raise StoreError(problem)
+
+    job.message = f"Handing it to {client.label}"
+    try:
+        if not client.status([info_hash]):
+            client.add(magnet=magnet, torrent=blob, save_path=str(folder))
+    except torrentclient.TorrentClientError as exc:
+        raise StoreError(str(exc)) from exc
+
+    started = time.time()
+    while True:
+        if job.cancel:
+            _forget_torrent(client, info_hash, delete_files=True)
+            raise Stopped()
+        try:
+            items = client.status([info_hash])
+        except torrentclient.TorrentClientError as exc:
+            raise StoreError(str(exc)) from exc
+        if not items:
+            if time.time() - started > 60:
+                raise StoreError(f"{client.label} no longer has the torrent; it may have "
+                                 "been removed there.")
+            time.sleep(2)
+            continue
+        item = items[0]
+        if item["state"] == "error":
+            raise StoreError(f"{client.label}: {item['error'] or 'the torrent stopped with an error.'}")
+        if item["progress"] >= 1 and item["state"] not in ("checking", "moving"):
+            content = item.get("content") or os.path.join(item.get("path", ""), item.get("name", ""))
+            path = Path(content)
+            if not path.exists():
+                raise StoreError(f"{client.label} finished, but the files are not at {path}.")
+            return path, client, info_hash
+        if item["state"] == "fetching details":
+            job.progress, job.message = -1.0, "Finding the torrent's details"
+        elif item["state"] in ("stalled", "queued", "paused"):
+            job.progress = item["progress"] if item["progress"] > 0 else -1.0
+            job.message = {"stalled": "Waiting for someone sharing it",
+                           "queued": f"Queued in {client.label}",
+                           "paused": f"Paused in {client.label}"}[item["state"]]
+        else:
+            job.progress = item["progress"]
+            parts = [f"{item['progress'] * 100:.0f}%"]
+            if item.get("speed"):
+                parts.append(_speed(item["speed"]))
+            if _eta(item.get("eta", 0)):
+                parts.append(_eta(item["eta"]))
+            job.message = " · ".join(parts)
+        time.sleep(2)
+
+
+def _forget_torrent(client, info_hash: str, delete_files: bool = False) -> None:
+    """Take a finished or cancelled torrent out of the client's list."""
+    try:
+        client.remove([info_hash], delete_files=delete_files)
+    except torrentclient.TorrentClientError:
+        pass
+
+
+# --------------------------------------------------------------------------
+# uninstalling
+# --------------------------------------------------------------------------
+
+def uninstall_game(gid: str) -> StoreJob:
+    """Remove a store game: its uninstaller or folder, then its Steam entry."""
+    with _LOCK:
+        job = JOBS.get(gid)
+        if job and job.phase in ACTIVE_PHASES:
+            raise StoreError("Wait until it has finished what it is doing.")
+        record = load_state()["installed"].get(gid)
+        if not record:
+            raise StoreError("That game was not installed from the store.")
+        job = StoreJob(id=gid, name=record.get("name", "Game"), phase="uninstalling",
+                       message="Uninstalling", started=time.time())
+        JOBS[gid] = job
+    threading.Thread(target=_run_uninstall, args=(job, gid, record), daemon=True).start()
+    return job
+
+
+def _norm(path) -> str:
+    return os.path.normcase(os.path.normpath(str(path))).rstrip("\\/")
+
+
+def _inside(child, parent) -> bool:
+    child, parent = _norm(child), _norm(parent)
+    return child == parent or child.startswith(parent + os.sep)
+
+
+def registered_program(record: dict) -> dict | None:
+    """The Programs and Features entry an installed game left, if any.
+
+    Matched only by where it lives, never by name, so a library root or
+    another game in the same folder can never be taken for it.
+    """
+    folder = record.get("dir")
+    if not folder or not uninstall.IS_WINDOWS:
+        return None
+    from . import winproc
+    for program in uninstall.list_programs():
+        location = program.get("location")
+        if location and _inside(location, folder):
+            return program
+        command = program.get("quiet") or program.get("uninstall") or ""
+        try:
+            exe = winproc.split_command(command)[0]
+        except Exception:
+            exe = ""
+        if exe and _inside(exe, folder):
+            return program
+    return None
+
+
+def deletable_folder(folder: Path, settings: dict) -> str:
+    """Why a game folder may not be deleted, or "" when it may."""
+    roots = [Path(f["path"]).expanduser() for f in settings.get("library_folders") or []
+             if f.get("path")]
+    try:
+        resolved = folder.resolve()
+    except OSError as exc:
+        return f"{folder} cannot be read ({exc.strerror or exc})."
+    if uninstall._is_reparse(folder):
+        return f"{folder} is a link to somewhere else, so it is left alone."
+    for root in roots:
+        try:
+            base = root.resolve()
+        except OSError:
+            continue
+        if base in resolved.parents:
+            return ""
+    return (f"{folder} is not inside one of your library folders, so the store will not "
+            "delete it. Remove it by hand if you want it gone.")
+
+
+def _force_rmtree(folder: Path) -> None:
+    import stat
+
+    def unlock(function, path, _info):
+        # Games ship read-only files; Windows will not delete those as they are.
+        try:
+            os.chmod(path, stat.S_IWRITE)
+            function(path)
+        except OSError:
+            pass
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(folder, onexc=unlock)
+    else:
+        shutil.rmtree(folder, onerror=unlock)
+
+
+def _run_uninstall(job: StoreJob, gid: str, record: dict) -> None:
+    try:
+        settings = library.load_settings()
+        folder = Path(record["dir"]) if record.get("dir") else None
+        notes = []
+        program = registered_program(record)
+        if program:
+            job.message = "Running its uninstaller"
+            outcome = autoinstall.run_uninstaller(program, silent=bool(program.get("can_be_quiet")))
+            if not outcome.get("ok"):
+                raise StoreError(outcome.get("message") or "Its uninstaller did not finish.")
+        if folder is not None and folder.exists():
+            job.message = "Deleting its folder"
+            problem = deletable_folder(folder, settings)
+            if problem and not program:
+                raise StoreError(problem)
+            if problem:
+                notes.append(problem)
+            else:
+                _force_rmtree(folder)
+                if folder.exists():
+                    notes.append(f"Some files in {folder} were in use and are still there.")
+        job.message = "Taking it out of Steam"
+        notes.insert(0, _remove_from_steam(record, settings))
+        _change_state(lambda state: state["installed"].pop(gid, None))
+        job.phase, job.finished, job.progress = "done", time.time(), 1.0
+        job.message = " ".join(n for n in ["Uninstalled."] + notes if n)
+        if load_state()["pending_remove"] and settings.get("store_restart") == "now":
+            threading.Thread(target=_restart_when_idle, daemon=True).start()
+    except Exception as exc:
+        job.phase, job.finished, job.progress = "failed", time.time(), -1.0
+        job.error = job.message = str(exc) or type(exc).__name__
+
+
+def _remove_from_steam(record: dict, settings: dict) -> str:
+    title = record.get("name", "")
+    if record.get("steam") == "pending":
+        # It never reached Steam: it just stops waiting to.
+        _change_state(lambda state: state.__setitem__(
+            "pending", [p for p in state["pending"] if p.get("title") != title]))
+        return ""
+    short_id = int(record.get("short_id") or 0)
+    if record.get("steam") != "added" or not short_id:
+        return ""
+    if not steam.steam_is_running():
+        user = _steam_user(settings)
+        if user is None:
+            return "No Steam account was found to take it out of."
+        library.remove_games(library.Job(id=uuid.uuid4().hex[:12]), user, [short_id], True)
+        return "It is out of your Steam library."
+
+    def keep(state: dict) -> None:
+        rest = [r for r in state["pending_remove"] if int(r.get("short_id", 0)) != short_id]
+        state["pending_remove"] = rest + [{"short_id": short_id, "title": title}]
+    _change_state(keep)
+    return "It leaves your Steam library when Steam restarts."
 
 
 def _follow(job: StoreJob, task_id: str) -> autoinstall.Task:
@@ -829,12 +1150,20 @@ def apply_pending(log=print) -> int:
     """Write every waiting shortcut. Steam must be closed."""
     state = load_state()
     pending = state["pending"]
-    if not pending:
+    removals = state["pending_remove"]
+    if not pending and not removals:
         return 0
     settings = library.load_settings()
     user = _steam_user(settings)
     if user is None:
         raise StoreError("No Steam account was found on this computer.")
+    if removals:
+        gone = library.Job(id=uuid.uuid4().hex[:12])
+        library.remove_games(gone, user, [int(r["short_id"]) for r in removals], True)
+        log(f"Took {gone.result.get('removed', 0)} uninstalled game(s) out of Steam.")
+        _change_state(lambda state: state.__setitem__("pending_remove", []))
+    if not pending:
+        return len(removals)
     job = library.Job(id=uuid.uuid4().hex[:12])
     library.apply_games(job, user, pending, settings)
     for line in job.log:
@@ -851,7 +1180,7 @@ def apply_pending(log=print) -> int:
         if any(a.get("source") == "store-self" for a in pending):
             state["store_shortcut_added"] = True
     _change_state(done)
-    return len(pending)
+    return len(pending) + len(removals)
 
 
 def busy() -> bool:
@@ -873,7 +1202,8 @@ def _restart_when_idle(relaunch: bool | None = None) -> None:
         time.sleep(3)
         if busy():
             continue
-        if not load_state()["pending"]:
+        state = load_state()
+        if not state["pending"] and not state["pending_remove"]:
             return
         refresh_steam(relaunch=STORE_WINDOW if relaunch is None else relaunch)
         return
@@ -1079,6 +1409,8 @@ def store_settings(settings: dict | None = None) -> dict:
         "reopen": settings.get("store_reopen", "bigpicture"),
         "glyphs": settings.get("store_glyphs", "auto"),
         "keep_downloads": bool(settings.get("store_keep_downloads")),
+        "keep_seeding": bool(settings.get("store_keep_seeding")),
+        "torrent": torrent_info(),
         "catalogues": clean_catalogue_list(settings.get("store_catalogues")),
     }
 
@@ -1091,6 +1423,8 @@ def save_store_settings(payload: dict) -> dict:
             patch[key] = payload[short]
     if "keep_downloads" in payload:
         patch["store_keep_downloads"] = bool(payload["keep_downloads"])
+    if "keep_seeding" in payload:
+        patch["store_keep_seeding"] = bool(payload["keep_seeding"])
     if "catalogues" in payload:
         patch["store_catalogues"] = clean_catalogue_list(payload["catalogues"])
     if patch:
@@ -1141,6 +1475,7 @@ def status() -> dict:
         "jobs": {gid: job.to_json() for gid, job in JOBS.items()},
         "installed": state["installed"],
         "pending": [p.get("title", "") for p in state["pending"]],
+        "pending_remove": [r.get("title", "") for r in state["pending_remove"]],
         "busy": busy(),
         "embed": embed.MANAGER.current(),
         "steam_running": _steam_running(),

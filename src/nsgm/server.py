@@ -1261,6 +1261,10 @@ class Handler(BaseHTTPRequestHandler):
             if payload.get("when_idle"):
                 return json_response(self, store.restart_when_idle(bool(payload.get("relaunch"))))
             return json_response(self, store.refresh_steam(bool(payload.get("relaunch"))))
+        if path == "/api/store/uninstall":
+            return json_response(self, {"job": store.uninstall_game(gid).to_json()})
+        if path == "/api/store/torrent-client":
+            return json_response(self, store.look_for_torrent_client())
         if path == "/api/store/add-self":
             return json_response(self, store.add_store_to_steam())
         return json_response(self, {"error": "Not found"}, 404)

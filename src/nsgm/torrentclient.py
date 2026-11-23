@@ -23,6 +23,7 @@ import base64
 import binascii
 import http.cookiejar
 import json
+import os
 import re
 import urllib.error
 import urllib.parse
@@ -157,9 +158,16 @@ class QBittorrent:
                 "eta": int(item.get("eta") or 0),
                 "size": int(item.get("size") or item.get("total_size") or 0),
                 "path": item.get("content_path") or item.get("save_path", ""),
+                "content": item.get("content_path") or "",
                 "error": "",
             })
         return out
+
+    def remove(self, hashes: list[str], delete_files: bool = False) -> None:
+        body = urllib.parse.urlencode({"hashes": "|".join(hashes),
+                                       "deleteFiles": "true" if delete_files else "false"}).encode()
+        self._request("/api/v2/torrents/delete", body,
+                      {"Content-Type": "application/x-www-form-urlencoded"})
 
 
 class Transmission:
@@ -238,9 +246,16 @@ class Transmission:
                 "eta": int(item.get("eta") or 0),
                 "size": int(item.get("totalSize") or 0),
                 "path": item.get("downloadDir", ""),
+                # Transmission reports the folder it saves into; the
+                # torrent's own file or folder is that plus its name.
+                "content": os.path.join(item.get("downloadDir", ""), item.get("name", ""))
+                           if item.get("downloadDir") and item.get("name") else "",
                 "error": item.get("errorString", ""),
             })
         return out
+
+    def remove(self, hashes: list[str], delete_files: bool = False) -> None:
+        self._call("torrent-remove", {"ids": hashes, "delete-local-data": bool(delete_files)})
 
 
 def from_settings(config: dict | None):
@@ -254,3 +269,28 @@ def from_settings(config: dict | None):
     if kind == "transmission":
         return Transmission(*args)
     return None
+
+
+# Where each client listens when nobody has changed it.
+DEFAULTS = (("transmission", "http://127.0.0.1:9091"), ("qbittorrent", "http://127.0.0.1:8080"))
+
+
+def detect(timeout: int = 3) -> dict | None:
+    """A torrent client already running on this computer, found without asking.
+
+    Returns ``{"kind", "url", "label", "version"}``, with ``needs_login``
+    set when one answers but wants a password, or None when none answers.
+    """
+    locked = None
+    for kind, url in DEFAULTS:
+        client = from_settings({"kind": kind, "url": url})
+        client.timeout = timeout
+        try:
+            version = client.version()
+        except TorrentClientError as exc:
+            if "username or password" in str(exc) and locked is None:
+                locked = {"kind": kind, "url": url, "label": client.label, "version": "",
+                          "needs_login": True}
+            continue
+        return {"kind": kind, "url": url, "label": client.label, "version": version}
+    return locked

@@ -67,6 +67,7 @@ DEFAULT_SETTINGS: dict = {
     "store_reopen": "bigpicture",    # what Steam opens into after that restart
     "store_glyphs": "auto",      # button icons: auto (from the controller), xbox, playstation
     "store_keep_downloads": False,
+    "store_keep_seeding": False,  # leave torrent downloads shared in the client after installing
     "store_download_folder": "",
 }
 

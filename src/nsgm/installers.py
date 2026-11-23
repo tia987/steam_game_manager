@@ -34,6 +34,8 @@ ARCHIVES = (".zip", ".7z", ".rar", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".zst",
 DISC_IMAGES = (".iso", ".img", ".bin", ".cue", ".chd", ".mdf", ".nrg")
 INSTALLER_HINTS = ("setup", "install", "installer")
 
+from .catalog import NOT_THE_GAME  # noqa: E402  (patches, updates, DLC: not the game)
+
 FRAMEWORKS: dict[str, dict] = {
     "inno": {"label": "Inno Setup", "quiet": True, "folder": True},
     "nsis": {"label": "NSIS", "quiet": True, "folder": True},
@@ -192,7 +194,16 @@ def find_installer(folder: Path, depth: int = 2) -> Path | None:
             hinted = any(hint in stem for hint in INSTALLER_HINTS)
             if not hinted and not lower.endswith(".msi"):
                 continue
-            score = level * 10 + (0 if stem in ("setup", "install") else 1)
+            # A download often carries setup programs for patches, updates
+            # or DLC beside the game's own; those are never the installer.
+            if NOT_THE_GAME.search(stem):
+                continue
+            try:
+                size = (here / name).stat().st_size
+            except OSError:
+                size = 0
+            # Nearest the top first, then a plain "setup", then the biggest.
+            score = (level * 10 + (0 if stem in ("setup", "install") else 1), -size)
             if best is None or score < best[0]:
                 best = (score, here / name)
     return best[1] if best else None

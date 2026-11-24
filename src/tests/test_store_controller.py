@@ -76,6 +76,29 @@ class TorrentSignInTests(unittest.TestCase):
         self.assertIn("Signed in", found["message"])
 
 
+class DefaultsTests(unittest.TestCase):
+    def test_playstation_symbols_newest_first_and_muted_installers_by_default(self):
+        settings = store.store_settings({})
+        self.assertEqual(settings["glyphs"], "playstation")
+        self.assertEqual(settings["sort"], "newest")
+        self.assertTrue(settings["mute_installers"])
+        self.assertEqual(store.store_settings({"store_glyphs": "auto"})["glyphs"], "playstation")
+        saved = store.save_store_settings({"sort": "name", "mute_installers": False, "glyphs": "auto"})
+        self.assertEqual((saved["sort"], saved["mute_installers"]), ("name", False))
+        self.assertEqual(saved["glyphs"], "auto")              # picked on purpose: kept
+
+    def test_catalogue_dates_are_kept_for_sorting(self):
+        parsed = store.parse_catalogue(b'[{"name": "A", "site": "https://a.example", '
+                                       b'"date": "2026-11-20"}, {"name": "B", '
+                                       b'"site": "https://b.example", "date": "soon"}]', "c")
+        self.assertEqual([g["date"] for g in parsed["games"]], ["2026-11-20", ""])
+
+    def test_muting_is_a_no_op_off_windows(self):
+        from nsgm import winaudio
+        if os.name != "nt":
+            self.assertIsNone(winaudio.mute_while(mock.Mock(pids=lambda: {1})))
+
+
 class StreamingTests(unittest.TestCase):
     def test_sunshine_is_recognised_unless_steam_started_it(self):
         with mock.patch.dict(os.environ, {"SUNSHINE_APP_NAME": "Game Store"}, clear=False):

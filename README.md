@@ -503,6 +503,14 @@ mouse.
   screen; add `--windowed` for a normal window.
 - **From the main app.** The **Store** button in the header.
 
+### Sorting
+
+Discover lists the newest releases first: by the date a release website
+posted them (or a JSON catalogue's optional `date`, `YYYY-MM-DD`), then
+in the site's own order. Games without a date follow, A to Z. The first
+chip in the row switches between *Newest first* and *A to Z*, and is
+remembered.
+
 ### Controls
 
 | Xbox | PlayStation | Does |
@@ -517,11 +525,13 @@ mouse.
 | View (⧉) | Share / Create | leave the store |
 | Right stick | Right stick | scroll |
 
-The button icons follow the controller in use: a DualShock 4 or
-DualSense (including Sunshine's emulated one) gets ✕ ○ □ △, anything
-else gets Xbox letters. If Steam Input or the stream makes a PlayStation
-pad report itself as an Xbox one, pick the icons in Settings →
-Controller.
+The button icons are PlayStation 5's by default, drawn the way the
+DualSense prints them: light grey ✕ ○ □ △ on dark buttons, Options and
+Create as their icons, L1/R1 as dark keys. Over Moonlight, Sunshine
+usually presents the pad to Windows as an Xbox one whatever is in your
+hands, so following the controller would show Xbox letters; Settings →
+Controller switches to Xbox letters, or to *auto* (follow the
+controller, with the coloured shapes for a DualShock 4).
 
 Moonlight's virtual controller, an Xbox or PlayStation pad, and Steam
 Input all work. If Steam Input maps the controller to keys instead,
@@ -591,7 +601,16 @@ newest release that has the full game, and pre-releases are skipped. A
 catalogue's direct link that points at one of those is refused before
 anything is installed, with the reason shown. Downloads go to
 `Downloads/Game Store downloads` and are deleted once installed, unless
-*Keep downloaded files* is on. An interrupted download carries on where
+*Keep downloaded files* is on.
+
+*Mute installers* (on by default, Windows) silences the music many
+repack installers play while they unpack: each of the setup program's
+own processes is muted in the Windows volume mixer as soon as it starts
+making sound, the same switch the mixer's per-app slider has. Programs
+inside the game's own folder are never muted, so a game launched at the
+end of a setup keeps its sound, and anything still running when the
+install ends is unmuted again. Nothing else, and not the system volume,
+is touched. An interrupted download carries on where
 it stopped.
 
 ### Many downloads at once

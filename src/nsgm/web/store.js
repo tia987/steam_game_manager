@@ -254,21 +254,48 @@ async function loadCovers() {
 
 // ------------------------------------------------------------------ discover
 
+// Newest first: by release date, then the catalogue's own order (a site
+// lists its newest post first). Games with no date go after, by name.
+function byNewest(a, b) {
+  const da = a.date || "", db = b.date || "";
+  if (da && db && da !== db) return da < db ? 1 : -1;
+  if (da && !db) return -1;
+  if (!da && db) return 1;
+  if (da) return (a.seq || 0) - (b.seq || 0);
+  return a.name.localeCompare(b.name);
+}
+
+function sortMode() {
+  return (S.data && S.data.settings && S.data.settings.sort) || "newest";
+}
+
 function filtered() {
   const query = S.query.trim().toLowerCase();
-  return S.games.filter((game) => {
+  const found = S.games.filter((game) => {
     if (S.catalogue !== "all" && game.catalogue !== S.catalogue) return false;
     if (S.tag !== "All" && !(game.tags || []).includes(S.tag)) return false;
     if (!query) return true;
     const text = [game.name, game.blurb, game.catalogue_name, ...(game.tags || [])].join(" ").toLowerCase();
     return query.split(/\s+/).every((word) => text.includes(word));
   });
+  return sortMode() === "name" ? found : found.sort(byNewest);
 }
 
 function renderChips() {
   const box = $("chips");
   const focusKey = keyOf(document.activeElement);
   box.innerHTML = "";
+  const sorter = make("button", "chip chip--sort nav", sortMode() === "name" ? "A to Z" : "Newest first");
+  sorter.type = "button";
+  sorter.dataset.key = "sort";
+  sorter.addEventListener("click", () => {
+    const next = sortMode() === "name" ? "newest" : "name";
+    S.data.settings.sort = next;
+    sorter.textContent = next === "name" ? "A to Z" : "Newest first";
+    renderGrid();
+    saveSettings({ sort: next });
+  });
+  box.append(sorter, make("span", "chips__rule"));
   const catalogues = (S.data.catalogues || []).filter((c) => c.enabled && c.count);
   if (catalogues.length > 1) {
     const all = { id: "all", name: "Every catalogue" };
@@ -884,7 +911,7 @@ function renderPending() {
 function renderSettings() {
   const settings = S.data.settings;
   for (const [id, value] of [["optRestart", settings.restart], ["optReopen", settings.reopen],
-                             ["optGlyphs", settings.glyphs || "auto"],
+                             ["optGlyphs", settings.glyphs || "playstation"],
                              ["optSiteMethod", settings.site_method || "auto"],
                              ["optParallel", String(settings.parallel || 2)],
                              ["optTorrentEngine", (settings.torrent || {}).engine || "builtin"]]) {
@@ -892,6 +919,7 @@ function renderSettings() {
   }
   $("optKeep").setAttribute("aria-checked", settings.keep_downloads ? "true" : "false");
   $("optOptional").setAttribute("aria-checked", settings.optional_files ? "true" : "false");
+  $("optMute").setAttribute("aria-checked", settings.mute_installers !== false ? "true" : "false");
   const every = Number(settings.site_pages) === 0;
   $("optAllPages").setAttribute("aria-checked", every ? "true" : "false");
   $("sitePagesLine").hidden = every;
@@ -1846,11 +1874,16 @@ async function remoteType() {
 
 // ------------------------------------------------------------------ button icons
 
+// The PlayStation shapes are drawn the way the DualSense prints them: thin,
+// even strokes, the same size inside the button, centred by eye (the
+// triangle sits a touch low so it looks centred, as on the pad).
 const SHAPES = {
-  cross: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.6 5.6l8.8 8.8M14.4 5.6l-8.8 8.8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>',
-  circle: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="5.3" fill="none" stroke="currentColor" stroke-width="2.4"/></svg>',
-  square: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="5.3" y="5.3" width="9.4" height="9.4" rx="0.6" fill="none" stroke="currentColor" stroke-width="2.4"/></svg>',
-  triangle: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4.8l5.6 9.8H4.4z" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linejoin="round"/></svg>',
+  cross: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6.1 6.1l7.8 7.8M13.9 6.1l-7.8 7.8" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/></svg>',
+  circle: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="4.7" fill="none" stroke="currentColor" stroke-width="1.75"/></svg>',
+  square: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="5.9" y="5.9" width="8.2" height="8.2" fill="none" stroke="currentColor" stroke-width="1.75"/></svg>',
+  triangle: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 5.3l4.9 8.6H5.1z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="miter"/></svg>',
+  options: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 6.5h10M5 10h10M5 13.5h10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  create: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 14V6.2M6.4 7.6l1.9 4.6M13.6 7.6l-1.9 4.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
   dpad: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7.6 2.8h4.8v4.8h4.8v4.8h-4.8v4.8H7.6v-4.8H2.8V7.6h4.8z" fill="currentColor"/></svg>',
 };
 
@@ -1858,11 +1891,11 @@ const GLYPH_SETS = {
   xbox: { a: "A", b: "B", x: "X", y: "Y", lb: "LB", rb: "RB", menu: "☰", view: "⧉", ls: "LS",
           dpad: SHAPES.dpad },
   ps: { a: SHAPES.cross, b: SHAPES.circle, x: SHAPES.square, y: SHAPES.triangle, lb: "L1", rb: "R1",
-        menu: "OPTIONS", view: "CREATE", ls: "L", dpad: SHAPES.dpad },
+        menu: SHAPES.options, view: SHAPES.create, ls: "L3", dpad: SHAPES.dpad },
 };
 
 function padStyle() {
-  const chosen = S.data && S.data.settings ? S.data.settings.glyphs : "auto";
+  const chosen = (S.data && S.data.settings && S.data.settings.glyphs) || "playstation";
   if (chosen === "xbox") return "xbox";
   if (chosen === "playstation") return PAD.detected === "ps4" ? "ps4" : "ps5";
   return PAD.detected;
@@ -1873,8 +1906,10 @@ function fillGlyph(node) {
   const style = padStyle();
   const family = style === "xbox" ? "xbox" : "ps";
   let content = GLYPH_SETS[family][button] || button.toUpperCase();
-  if (family === "ps" && button === "view") content = style === "ps4" ? "SHARE" : "CREATE";
-  node.className = `glyph glyph--${family} glyph--${family}-${button}`;
+  if (style === "ps4" && button === "view") content = "SHARE";
+  if (style === "ps4" && button === "menu") content = "OPTIONS";
+  node.className = `glyph glyph--${family} glyph--${family}-${button}` +
+    (family === "ps" ? ` glyph--${style === "ps4" ? "ps4" : "ps5"}` : "");
   if (content.startsWith("<svg")) node.innerHTML = content;
   else node.textContent = content;
 }
@@ -1986,6 +2021,8 @@ function wire() {
       loadOverview();
     }
   });
+  $("optMute").dataset.key = "optMute";
+  $("optMute").addEventListener("click", () => saveSettings({ mute_installers: S.data.settings.mute_installers === false }));
   $("optOptional").dataset.key = "optOptional";
   $("optOptional").addEventListener("click", () => saveSettings({ optional_files: !S.data.settings.optional_files }));
   $("optKeep").dataset.key = "optKeep";

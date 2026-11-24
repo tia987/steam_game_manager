@@ -271,6 +271,10 @@ def _clean_game(raw, catalogue_id: str) -> dict | None:
         "logo": _clean_url(raw.get("logo")),
         "wide": _clean_url(raw.get("wide")),
         "size": size,
+        # When it was added or released, YYYY-MM-DD, for "newest first".
+        "date": (_clean_text(raw.get("date") or raw.get("added"), 10)
+                 if re.match(r"^\d{4}-\d{2}-\d{2}", str(raw.get("date") or raw.get("added") or ""))
+                 else ""),
     }
     if not repo and not downloads and not game["site"]:
         return None
@@ -2401,7 +2405,21 @@ SETTING_KEYS = {
     "store_glyphs": ("auto", "xbox", "playstation"),
     "store_site_method": ("auto", "direct", "torrent"),
     "store_torrent_engine": ("builtin", "app"),
+    "store_sort": ("newest", "name"),
 }
+
+
+def _glyphs(settings: dict) -> str:
+    """Which button symbols to show: PlayStation unless someone picked otherwise.
+
+    "auto" used to be the default, and over Moonlight it is misleading:
+    Sunshine hands Windows a virtual Xbox pad whatever is in your hands, so
+    a DualSense got Xbox letters. An "auto" nobody chose is read as PlayStation.
+    """
+    value = settings.get("store_glyphs", "playstation")
+    if value == "auto" and not settings.get("store_glyphs_chosen"):
+        return "playstation"
+    return value if value in ("auto", "xbox", "playstation") else "playstation"
 
 
 def store_settings(settings: dict | None = None) -> dict:
@@ -2409,7 +2427,9 @@ def store_settings(settings: dict | None = None) -> dict:
     return {
         "restart": settings.get("store_restart", "exit"),
         "reopen": settings.get("store_reopen", "bigpicture"),
-        "glyphs": settings.get("store_glyphs", "auto"),
+        "glyphs": _glyphs(settings),
+        "sort": settings.get("store_sort", "newest"),
+        "mute_installers": settings.get("mute_installers", True) is not False,
         "keep_downloads": bool(settings.get("store_keep_downloads")),
         "keep_seeding": bool(settings.get("store_keep_seeding")),
         "builtin": settings.get("store_builtin_enabled", True) is not False,
@@ -2428,6 +2448,10 @@ def save_store_settings(payload: dict) -> dict:
         short = key.replace("store_", "")
         if payload.get(short) in allowed:
             patch[key] = payload[short]
+    if "store_glyphs" in patch:
+        patch["store_glyphs_chosen"] = True
+    if "mute_installers" in payload:
+        patch["mute_installers"] = bool(payload["mute_installers"])
     if "ask_drive" in payload:
         patch["store_ask_drive"] = bool(payload["ask_drive"])
     if "keep_downloads" in payload:
@@ -2469,6 +2493,7 @@ def overview(force: bool = False) -> dict:
             item.pop("blurb", None)
             item["catalogue_name"] = entry["name"]
             item["installable"] = installable(game)
+            item["seq"] = len(games)        # the catalogue's own order: a site's newest first
             games.append(item)
             tags.update(game.get("tags") or [])
     games.sort(key=lambda g: g["name"].lower())

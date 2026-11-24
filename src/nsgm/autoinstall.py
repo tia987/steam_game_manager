@@ -47,7 +47,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import (drives, embed, installers, library, pipeline, placement, scanners, steam,
-               storeinfo, tools, uninstall, winproc)
+               storeinfo, tools, uninstall, winaudio, winproc)
 
 # Whoever runs an external installer or uninstaller holds this, so an
 # uninstall never starts while an installer's window is being held.
@@ -56,6 +56,14 @@ PROGRAM_LOCK = threading.Lock()
 ACTIVE = ("queued", "checking", "installing")
 FINISHED = ("done", "failed", "cancelled")
 
+
+
+def _mute_installers() -> bool:
+    """Whether installers' own music is silenced (on unless switched off)."""
+    try:
+        return library.load_settings().get("mute_installers", True) is not False
+    except Exception:
+        return True
 
 class Cancelled(Exception):
     pass
@@ -687,6 +695,9 @@ class Queue:
                 tree, f"Installing {task.name}",
                 kind="quiet" if task.mode == "quiet" else "classic", task_id=task.id))
             task.result["session"] = session.id
+            # Repack installers like to play music while they unpack.
+            muter = winaudio.mute_while(tree, spare=str(target) if target else "",
+                                        enabled=_mute_installers())
             last_size = 0.0
             try:
                 while tree.alive():
@@ -705,6 +716,8 @@ class Queue:
                             task.message = f"Installing {current}"
                     time.sleep(0.5)
             finally:
+                if muter is not None:
+                    muter.stop()
                 embed.MANAGER.finish(session)
                 code = tree.exit_code()
                 tree.close()
@@ -984,9 +997,12 @@ def run_uninstaller(program: dict, silent: bool = False, timeout: int = 3600) ->
         session = embed.MANAGER.start(embed.Session(
             tree, f"Uninstalling {program.get('name', '')}",
             kind="quiet" if silent else "classic"))
+        muter = winaudio.mute_while(tree, enabled=_mute_installers())
         try:
             finished = tree.wait(timeout=timeout)
         finally:
+            if muter is not None:
+                muter.stop()
             embed.MANAGER.finish(session)
             code = tree.exit_code()
             tree.close()

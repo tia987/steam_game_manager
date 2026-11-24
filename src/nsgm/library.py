@@ -66,7 +66,7 @@ DEFAULT_SETTINGS: dict = {
     "store_builtin_enabled": True,   # the open-source catalogue, which can be switched off
     "store_restart": "exit",     # exit: offer a Steam restart on leaving; now: as soon as idle
     "store_reopen": "bigpicture",    # what Steam opens into after that restart
-    "store_glyphs": "auto",      # button icons: auto (from the controller), xbox, playstation
+    "store_glyphs": "playstation",  # button icons: playstation, xbox, or auto (from the controller)
     "store_keep_downloads": False,
     "store_keep_seeding": False,  # leave torrent downloads shared in the client after installing
     "store_download_folder": "",

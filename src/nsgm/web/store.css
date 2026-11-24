@@ -165,17 +165,21 @@ body[data-input="pad"] { cursor: none; }
 .glyph--xbox-x { background: #6aa8ff; }
 .glyph--xbox-y { background: #ffd35c; }
 
-/* PlayStation: the four shapes in their colours on a dark button */
+/* PlayStation 5: as the DualSense has them, light grey shapes on a
+   near-black button with a faint rim; no colours */
 .glyph--ps-a, .glyph--ps-b, .glyph--ps-x, .glyph--ps-y {
   padding: 0;
   width: 1.5rem;
-  background: #2c2639;
-  box-shadow: inset 0 0 0 0.08rem #4a4160;
+  color: #ececf0;
+  background: radial-gradient(circle at 50% 35%, #34343b 0%, #1a1a1f 62%, #111114 100%);
+  box-shadow: inset 0 0 0 0.06rem rgba(255, 255, 255, 0.2), 0 0.05rem 0.12rem rgba(0, 0, 0, 0.45);
 }
-.glyph--ps-a { color: #8ab4ff; }
-.glyph--ps-b { color: #ff6f86; }
-.glyph--ps-x { color: #f59ad6; }
-.glyph--ps-y { color: #4fd6a8; }
+.glyph--ps-a svg, .glyph--ps-b svg, .glyph--ps-x svg, .glyph--ps-y svg { width: 1.2rem; height: 1.2rem; }
+/* PlayStation 4: the same, with the shapes in their colours */
+.glyph--ps4.glyph--ps-a { color: #8ab4ff; }
+.glyph--ps4.glyph--ps-b { color: #ff6f86; }
+.glyph--ps4.glyph--ps-x { color: #f59ad6; }
+.glyph--ps4.glyph--ps-y { color: #4fd6a8; }
 
 /* bumpers, menu buttons, sticks and the d-pad are plain keys */
 .glyph--xbox-lb, .glyph--xbox-rb, .glyph--ps-lb, .glyph--ps-rb {
@@ -186,6 +190,16 @@ body[data-input="pad"] { cursor: none; }
   border-radius: 0.35rem; background: var(--rule); color: var(--paper);
 }
 .glyph--ps-menu, .glyph--ps-view { font-size: 0.56rem; letter-spacing: 0.06em; padding: 0 0.45rem; }
+/* DualSense: Options and Create are small dark pills with their icons;
+   L1 and R1 are dark keys with light lettering */
+.glyph--ps5.glyph--ps-menu, .glyph--ps5.glyph--ps-view {
+  min-width: 1.9rem; padding: 0 0.3rem; border-radius: 999px;
+  background: #18181c; color: #ececf0; box-shadow: inset 0 0 0 0.06rem rgba(255, 255, 255, 0.2);
+}
+.glyph--ps5.glyph--ps-lb, .glyph--ps5.glyph--ps-rb, .glyph--ps5.glyph--ps-ls {
+  background: #18181c; color: #ececf0; box-shadow: inset 0 0 0 0.06rem rgba(255, 255, 255, 0.2);
+  font-size: 0.66rem; letter-spacing: 0.02em;
+}
 .glyph--xbox-dpad, .glyph--ps-dpad { padding: 0 0.2rem; }
 .glyph--xbox-dpad svg, .glyph--ps-dpad svg { width: 1.1rem; height: 1.1rem; }
 body[data-input="mouse"] .glyph { visibility: hidden; }
@@ -526,7 +540,7 @@ body[data-input="mouse"] .btn:hover:not(:disabled) { filter: brightness(1.12); }
 .adder__result p { flex: 1; margin: 0; color: var(--dim); }
 .adder__result p strong { color: var(--paper); }
 .adder__result.is-error p { color: var(--warn); }
-#catalogueRefresh { margin-top: 1.2rem; }
+.catalogue__tools { margin-top: 1.2rem; flex-wrap: wrap; align-items: center; }
 
 .choices { display: grid; gap: 0.6rem; margin-bottom: 0.8rem; }
 .choice {
@@ -685,9 +699,14 @@ body[data-input="mouse"] .hints { visibility: hidden; }
 .key.is-on { color: var(--ready); }
 .key:focus-visible, body[data-input="pad"] .key:focus { box-shadow: var(--focus); color: var(--paper); transform: scale(1.06); }
 .key--done:focus-visible, body[data-input="pad"] .key--done:focus { color: var(--ink); }
-.key .glyph { min-width: 1.2rem; height: 1.2rem; font-size: 0.6rem; }
-.key .glyph--ps-x, .key .glyph--ps-y { width: 1.2rem; }
-.key .glyph svg { width: 0.85rem; height: 0.85rem; }
+/* On the keyboard's wide keys the button sits at the left edge, so the
+   word stays in the middle of the key like on the keys without one. */
+.key--action { position: relative; padding: 0 0.5rem; }
+.key--action .glyph { position: absolute; left: 0.55rem; top: 50%; transform: translateY(-50%); }
+.key .glyph { min-width: 1.25rem; height: 1.25rem; font-size: 0.6rem; }
+.key .glyph--ps-a, .key .glyph--ps-b, .key .glyph--ps-x, .key .glyph--ps-y { width: 1.25rem; }
+.key .glyph svg { width: 0.95rem; height: 0.95rem; }
+.key .glyph--ps5.glyph--ps-menu, .key .glyph--ps5.glyph--ps-view { min-width: 1.7rem; }
 
 /* questions */
 .sheet--dialog { place-items: center; z-index: 40; }

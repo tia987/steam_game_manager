@@ -119,7 +119,7 @@ jobs:
         shell: bash
         working-directory: ${{ steps.locate.outputs.root }}
         run: |
-          python -c "import nsgm, nsgm.server, nsgm.resolve, nsgm.steam, nsgm.autoinstall, nsgm.embed, nsgm.winproc, nsgm.drives, nsgm.installers, nsgm.placement, nsgm.storeinfo, nsgm.torrentclient, nsgm.tools, nsgm.store; print('imports fine')"
+          python -c "import nsgm, nsgm.server, nsgm.resolve, nsgm.steam, nsgm.autoinstall, nsgm.embed, nsgm.winproc, nsgm.drives, nsgm.installers, nsgm.placement, nsgm.storeinfo, nsgm.torrentclient, nsgm.tools, nsgm.store, nsgm.winaudio, nsgm.torrentengine, nsgm.sitesync, nsgm.hosters; print('imports fine')"
           python -c "
           from nsgm import vdf, steam
           entry = steam.build_shortcut('Test', '/tmp/game.exe')
@@ -168,6 +168,40 @@ jobs:
           print('remote:', embed.MANAGER.remote('next'))
           print('store input structures fine')
           "
+
+      # Installers' music is muted through Windows' Core Audio COM interfaces,
+      # called through ctypes method tables: a wrong index or signature
+      # crashes rather than failing politely, so walk every output's audio
+      # sessions here (a runner may have no sound device; the calls still run).
+      - name: Check the installer muting
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        working-directory: ${{ steps.locate.outputs.root }}
+        run: |
+          python -c "
+          import os, time
+          from nsgm import winaudio
+          path = winaudio.image_path(os.getpid())
+          assert path.lower().endswith('.exe'), path
+          assert winaudio._ole32.CoInitializeEx(None, 0) in (0, 1)
+          count = 0
+          for pid, volume in winaudio._sessions():
+              winaudio._release(volume)
+              count += 1
+          print('audio sessions seen:', count)
+          muter = winaudio.Muter(lambda: {os.getpid()}).start()
+          time.sleep(2.5)
+          muter.stop()
+          print('installer muting fine')
+          "
+
+      # The store's behaviour is covered by offline tests with local fake
+      # sites, hosts and torrent clients. Linux only: they keep their
+      # settings in a temporary folder through XDG_CONFIG_HOME.
+      - name: Run the tests
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: ${{ steps.locate.outputs.root }}
+        run: python -m unittest discover -s tests -v
 
       - name: Build
         working-directory: ${{ steps.locate.outputs.root }}

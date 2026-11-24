@@ -36,6 +36,7 @@ instead.
 from __future__ import annotations
 
 import json
+import re
 import os
 import shutil
 import sys
@@ -47,7 +48,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import (drives, embed, installers, library, pipeline, placement, scanners, steam,
-               storeinfo, tools, uninstall, winaudio, winproc)
+               storeinfo, tools, uninstall, winaudio, winclean, winproc)
 
 # Whoever runs an external installer or uninstaller holds this, so an
 # uninstall never starts while an installer's window is being held.
@@ -56,6 +57,38 @@ PROGRAM_LOCK = threading.Lock()
 ACTIVE = ("queued", "checking", "installing")
 FINISHED = ("done", "failed", "cancelled")
 
+
+
+# Side programs installers run once the game is in place. Each opens its own
+# window that wants clicking: hopeless with a controller over Moonlight.
+#   - file checkers, which hash every installed file (QuickSFV and friends);
+#   - redistributable setups (DirectX, Visual C++, .NET, PhysX, OpenAL...),
+#     which most PCs already have.
+CHECKERS = re.compile(r"(?i)^(quicksfv|quick_sfv|md5check(er)?|hashcheck|rapidcrc|"
+                      r"verify(files)?|fitgirl[-_ ]?verify)\w*\.exe$")
+REDISTS = re.compile(
+    r"(?i)^(vc_?redist\w*|vcredist\w*|vcpp\w*|dxsetup|dxwebsetup|directx\w*|dxredist\w*|"
+    r"oalinst|openal\w*|physx\w*|nvidiaphysx\w*|dotnet\w*|dotnetfx\w*|ndp\d\w*|netfx\w*|"
+    r"windowsdesktop-runtime\w*|aspnetcore-runtime\w*|xnafx\w*|xna\w*redist\w*|"
+    r"ue[345]?prereqsetup\w*|ueprereq\w*|uplay\w*setup\w*|vulkanrt\w*)[\w.-]*\.exe$")
+
+
+def side_program(name: str) -> str:
+    """"checker", "redist" or "" for a program an installer started."""
+    base = os.path.basename(name or "")
+    if CHECKERS.match(base):
+        return "checker"
+    if REDISTS.match(base):
+        return "redist"
+    return ""
+
+
+def _setting(name: str, default: bool = True) -> bool:
+    try:
+        value = library.load_settings().get(name, default)
+    except Exception:
+        return default
+    return default if value is None else value is not False
 
 
 def _mute_installers() -> bool:
@@ -99,6 +132,8 @@ class Task:
     ssd_note: str = ""
     ssd_override: str = ""
     size_override: int = 0
+    skip_redists: bool = False      # stop DirectX/Visual C++/... setups the installer starts
+    skip_checkers: bool = False     # stop file checkers that pop up after installing
     installer_asks: bool = False   # classic install with no folder: its screens choose
     notes: list = field(default_factory=list)
     warning: str = ""
@@ -241,7 +276,8 @@ class Queue:
 
     def add(self, path: str, name: str = "", target_root: str = "", folder_name: str = "",
             mode: str = "", ssd: str = "", size: int = 0, auto: bool = False,
-            origin: str = "manual", installer_asks: bool = False) -> Task:
+            origin: str = "manual", installer_asks: bool = False,
+            skip_redists: bool = False, skip_checkers: bool = False) -> Task:
         source = str(Path(path).expanduser())
         with self.lock:
             for task in self.tasks:
@@ -259,6 +295,7 @@ class Queue:
                     task.mode, task.ssd_override = mode or task.mode, ssd
                     task.size_override = int(size or 0)
                     task.installer_asks, task.auto = installer_asks, False
+                    task.skip_redists, task.skip_checkers = skip_redists, skip_checkers
                     task.status, task.action, task.warning = "queued", "", ""
                     task.message = "Waiting its turn" if self.current else "Starting"
                     self.save()
@@ -270,6 +307,7 @@ class Queue:
                         target_root=target_root.strip(), folder_name=folder_name.strip(),
                         mode=mode, auto=auto, origin=origin, ssd_override=ssd,
                         size_override=int(size or 0), installer_asks=installer_asks,
+                        skip_redists=skip_redists, skip_checkers=skip_checkers,
                         created=time.time())
             task.message = "Waiting its turn" if self.current else "Starting"
             self.tasks.append(task)
@@ -684,6 +722,7 @@ class Queue:
                             else "The installer is open; answer it here")
             self._note(task, f"Running {Path(info['source']).name}"
                              f"{' ' + command['params'] if command['params'] else ''}")
+            desktop = winclean.DesktopWatch(enabled=_setting("no_desktop_shortcuts"))
             try:
                 launched = winproc.launch(command["file"], command["params"],
                                           cwd=str(Path(info["source"]).parent),
@@ -699,8 +738,10 @@ class Queue:
             muter = winaudio.mute_while(tree, spare=str(target) if target else "",
                                         enabled=_mute_installers())
             last_size = 0.0
+            handled: set = set()
             try:
                 while tree.alive():
+                    self._stop_side_programs(task, tree, handled)
                     if task.cancel:
                         stopped, why = tree.terminate()
                         if not stopped:
@@ -721,8 +762,15 @@ class Queue:
                 embed.MANAGER.finish(session)
                 code = tree.exit_code()
                 tree.close()
+                for shortcut in desktop.tidy():
+                    self._note(task, f"Removed the desktop shortcut {Path(shortcut).name}.")
         if task.cancel:
             raise Cancelled()
+        if target is not None and _setting("clear_run_as_admin"):
+            # Many repacks tick "run as administrator" on the game, which then
+            # asks for permission at every start: a prompt Big Picture hides.
+            for program in winclean.clear_run_as_admin(str(target)):
+                self._note(task, f"{Path(program).name} no longer asks for administrator rights.")
 
         ok, said = installers.interpret(task.framework, code)
         self._note(task, f"The installer exited{'' if code is None else f' with code {code}'}.")
@@ -739,6 +787,29 @@ class Queue:
                                "Try again through its own screens.")
         if said:
             task.warning = said
+
+    def _stop_side_programs(self, task: Task, tree, handled: set) -> None:
+        """Stop the extras an installer starts, when this install should skip them."""
+        if not (task.skip_redists or task.skip_checkers):
+            return
+        for pid in tree.pids():
+            if pid in handled or pid == tree.root:
+                continue
+            kind = side_program(tree.names.get(pid, ""))
+            if not kind or (kind == "redist" and not task.skip_redists) \
+                    or (kind == "checker" and not task.skip_checkers):
+                continue
+            handled.add(pid)
+            what = "file check" if kind == "checker" else "extra setup"
+            name = tree.names.get(pid, "")
+            if tree.stop_branch(pid):
+                self._note(task, f"Skipped the {what} {name}.")
+            else:
+                self._note(task, f"Could not stop the {what} {name}: it runs as administrator "
+                                 "and this app does not.")
+                task.warning = (f"The installer opened {name}, which this app cannot close "
+                                "because it runs as administrator. Turn on Run as administrator "
+                                "to have extras skipped.")
 
     @staticmethod
     def _last_file(log: str) -> str:

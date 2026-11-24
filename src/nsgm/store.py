@@ -69,7 +69,8 @@ import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePath
 
-from . import (archive, autoinstall, catalog, download, drives, hosters, installers, library,
+from . import (archive, autoinstall, catalog, download, drives, filecheck, hosters, installers,
+               library,
                pipeline, placement, proc, scanners, sgdb, sitecatalog, sitesync, steam, tools,
                torrentclient, torrentengine, torrents, uninstall)
 
@@ -824,6 +825,8 @@ class StoreJob:
     started: float = 0.0
     finished: float = 0.0
     target: str = ""              # a library folder chosen for this one game, or "" for automatic
+    extras: bool = False          # let the installer run DirectX, Visual C++ and other extras
+    verify: bool = False          # check the installed files against the release's checksums
     cancel: bool = False
 
     def to_json(self) -> dict:
@@ -923,15 +926,21 @@ def change_library(action: str, path: str) -> dict:
     return library_overview()
 
 
-def install(gid: str, target: str = "") -> StoreJob:
+def install(gid: str, target: str = "", extras: bool | None = None,
+            verify: bool | None = None) -> StoreJob:
     """Download and install one game, in the background.
 
     ``target`` is one of the library folders, chosen for this game alone;
     without it the usual order and free-space rules choose.
     """
+    settings = library.load_settings()
     if target:
-        if target not in _library_paths(library.load_settings()):
+        if target not in _library_paths(settings):
             raise StoreError("Pick one of your library folders.")
+    # Off unless asked for: most PCs already have DirectX and Visual C++, and
+    # their setups are windows a controller cannot click.
+    extras = bool(settings.get("store_extras")) if extras is None else bool(extras)
+    verify = bool(settings.get("store_verify")) if verify is None else bool(verify)
     with _LOCK:
         job = JOBS.get(gid)
         if job and job.phase in ACTIVE_PHASES:
@@ -944,7 +953,8 @@ def install(gid: str, target: str = "") -> StoreJob:
                              "has the details.")
         previous = JOBS.get(gid)
         job = StoreJob(id=gid, name=game["name"], started=time.time(),
-                       target=target or (previous.target if previous else ""))
+                       target=target or (previous.target if previous else ""),
+                       extras=extras, verify=verify)
         JOBS[gid] = job
     threading.Thread(target=_run_job, args=(job, game), daemon=True).start()
     return job
@@ -966,6 +976,8 @@ def retry(gid: str) -> StoreJob:
     if job and job.phase == "waiting" and job.task:
         autoinstall.QUEUE.retry(job.task)
         return job
+    if job:
+        return install(gid, extras=job.extras, verify=job.verify)
     return install(gid)
 
 
@@ -1090,9 +1102,13 @@ def _install_and_record(job: StoreJob, game: dict, settings: dict, folder: Path,
     job.phase, job.progress, job.message = "installing", -1.0, "Waiting its turn"
     task = autoinstall.QUEUE.add(result["path"], name=game["name"], mode="quiet",
                                  origin="store", size=int(game.get("size") or 0),
-                                 target_root=job.target)
+                                 target_root=job.target,
+                                 # The installer's own file checker always waits for
+                                 # clicks; the store checks the files itself instead.
+                                 skip_redists=not job.extras, skip_checkers=True)
     job.task = task.id
     task = _follow(job, task.id)
+    checked = _check_files(job, task.target_dir) if job.verify else None
 
     games = task.result.get("games") or []
     record = {"name": game["name"], "catalogue": game["catalogue"], "version": version,
@@ -1108,6 +1124,9 @@ def _install_and_record(job: StoreJob, game: dict, settings: dict, folder: Path,
             record["steam"] = add_or_queue([entry], settings)
         except Exception as exc:          # installed is installed, whatever Steam says
             record["steam"], record["steam_error"] = "failed", str(exc)
+    if checked is not None:
+        record["check"] = {k: checked[k] if isinstance(checked[k], int) else checked[k][:50]
+                           for k in ("checked", "missing", "bad")}
     _change_state(lambda state: state["installed"].__setitem__(game["id"], record))
     if shared is not None and not shared.ours:
         pass                       # the person's own torrent: neither it nor its files are touched
@@ -1126,8 +1145,36 @@ def _install_and_record(job: StoreJob, game: dict, settings: dict, folder: Path,
         "none": "Installed, but no program to start was found in it.",
         "failed": f"Installed, but not added to Steam: {record.get('steam_error', '')}",
     }.get(record["steam"], "Installed.")
+    if checked is not None:
+        wrong = len(checked["missing"]) + len(checked["bad"])
+        if not checked["checked"]:
+            job.message += " It came with no list of files to check against."
+        elif wrong:
+            job.message += (f" {wrong} of {checked['checked']} files did not check out "
+                            f"(first: {(checked['missing'] + checked['bad'])[0]}); reinstalling "
+                            "it may help.")
+        else:
+            job.message += f" All {checked['checked']} files checked out."
     if record["steam"] == "pending" and settings.get("store_restart") == "now":
         threading.Thread(target=_restart_when_idle, daemon=True).start()
+
+
+def _check_files(job: StoreJob, folder: str) -> dict | None:
+    """The installed files against the release's checksum list, in the background job."""
+    if not folder or not Path(folder).is_dir():
+        return None
+    job.phase, job.progress, job.message = "installing", 0.0, "Checking the installed files"
+
+    def progress(number: int, total: int, name: str) -> None:
+        job.progress = number / total if total else -1.0
+        job.message = f"Checking files · {number:,} of {total:,}"
+
+    try:
+        return filecheck.check(folder, progress=progress, stop=lambda: job.cancel)
+    except filecheck.Stopped:
+        return None
+    except OSError as exc:
+        return {"checked": 0, "missing": [], "bad": [], "error": str(exc)}
 
 
 # --------------------------------------------------------------------------
@@ -2409,6 +2456,14 @@ SETTING_KEYS = {
 }
 
 
+def _running_as_admin() -> bool:
+    try:
+        from . import winproc
+        return bool(winproc.is_admin())
+    except Exception:
+        return False
+
+
 def _glyphs(settings: dict) -> str:
     """Which button symbols to show: PlayStation unless someone picked otherwise.
 
@@ -2430,6 +2485,12 @@ def store_settings(settings: dict | None = None) -> dict:
         "glyphs": _glyphs(settings),
         "sort": settings.get("store_sort", "newest"),
         "mute_installers": settings.get("mute_installers", True) is not False,
+        "no_desktop_shortcuts": settings.get("no_desktop_shortcuts", True) is not False,
+        "run_as_admin": bool(settings.get("run_as_admin")),
+        "is_admin": _running_as_admin(),
+        "clear_run_as_admin": settings.get("clear_run_as_admin", True) is not False,
+        "extras": bool(settings.get("store_extras")),
+        "verify": bool(settings.get("store_verify")),
         "keep_downloads": bool(settings.get("store_keep_downloads")),
         "keep_seeding": bool(settings.get("store_keep_seeding")),
         "builtin": settings.get("store_builtin_enabled", True) is not False,
@@ -2450,6 +2511,15 @@ def save_store_settings(payload: dict) -> dict:
             patch[key] = payload[short]
     if "store_glyphs" in patch:
         patch["store_glyphs_chosen"] = True
+    if "extras" in payload:
+        patch["store_extras"] = bool(payload["extras"])
+    if "verify" in payload:
+        patch["store_verify"] = bool(payload["verify"])
+    if "run_as_admin" in payload:
+        patch["run_as_admin"] = bool(payload["run_as_admin"])
+    for flag in ("no_desktop_shortcuts", "clear_run_as_admin"):
+        if flag in payload:
+            patch[flag] = bool(payload[flag])
     if "mute_installers" in payload:
         patch["mute_installers"] = bool(payload["mute_installers"])
     if "ask_drive" in payload:

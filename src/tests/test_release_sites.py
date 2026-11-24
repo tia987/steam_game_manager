@@ -202,6 +202,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
 class ReleaseSiteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # Whatever is installed on the machine running the tests (GitHub's
+        # Ubuntu images carry aria2): no real torrent engine here.
+        from unittest import mock
+        cls.no_engine = mock.patch("nsgm.torrentengine.available", return_value=False)
+        cls.no_engine.start()
         cls.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         cls.server.wanted = {}
         cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
@@ -210,6 +215,7 @@ class ReleaseSiteTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.server.shutdown()
+        cls.no_engine.stop()
 
     def test_listing_reads_every_page_and_skips_news(self):
         found = sitecatalog.read_site(self.base + "/", pages=5)

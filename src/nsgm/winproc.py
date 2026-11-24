@@ -361,6 +361,41 @@ class ProcessTree:
                            "stop it. Use its Cancel button.")
         return True, ""
 
+    def stop_branch(self, pid: int) -> bool:
+        """Stop one program in the tree and everything it started. False if refused.
+
+        For the side programs an installer runs - a redistributable's setup,
+        a file checker - while the installer itself carries on.
+        """
+        if not IS_WINDOWS:
+            return False
+        self.refresh()
+        table = _snapshot()
+        with self.lock:
+            branch, grew = {pid}, True
+            while grew:
+                grew = False
+                for child in list(self.known):
+                    if child in branch:
+                        continue
+                    parent = table.get(child, (0, ""))[0]
+                    if parent in branch:
+                        branch.add(child)
+                        grew = True
+            targets = [p for p in branch if p in self.live]
+        refused = False
+        for target in sorted(targets, reverse=True):
+            handle = _kernel32.OpenProcess(_PROCESS_TERMINATE, False, target)
+            if not handle:
+                refused = True
+                continue
+            try:
+                if not _kernel32.TerminateProcess(handle, 1):
+                    refused = True
+            finally:
+                _kernel32.CloseHandle(handle)
+        return not refused
+
     def close(self) -> None:
         handle = self.launched.handle
         if IS_WINDOWS and handle:

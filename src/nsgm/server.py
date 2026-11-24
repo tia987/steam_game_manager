@@ -1248,7 +1248,11 @@ class Handler(BaseHTTPRequestHandler):
         gid = str(payload.get("id", ""))
         if path == "/api/store/install":
             target = str(payload.get("target", ""))
-            return json_response(self, {"job": store.install(gid, target).to_json()})
+            extras = payload.get("extras")
+            verify = payload.get("verify")
+            return json_response(self, {"job": store.install(
+                gid, target, None if extras is None else bool(extras),
+                None if verify is None else bool(verify)).to_json()})
         if path == "/api/store/cancel":
             store.cancel(gid)
             return json_response(self, store.status())

@@ -603,6 +603,33 @@ anything is installed, with the reason shown. Downloads go to
 `Downloads/Game Store downloads` and are deleted once installed, unless
 *Keep downloaded files* is on.
 
+**After the game is in place**, repack installers like to open more
+windows, which a controller over Moonlight cannot click. The store deals
+with each (Windows):
+
+- **Extras.** DirectX, Visual C++, .NET, PhysX, OpenAL and similar setups
+  the installer starts are stopped as soon as they appear, unless
+  *Let installers add DirectX, Visual C++ and other extras* is on. Most
+  PCs have them already. A game's page has the same switch for that game,
+  set before pressing Install.
+- **The file checker** (QuickSFV and similar, the red-and-white lifebuoy)
+  is always stopped: it ends on a window that wants a click. *Check the
+  files after installing*, in Settings or on a game's page, does the same
+  check itself against the release's `.md5`/`.sfv` list, quietly, and the
+  result is shown when the install finishes.
+- **Desktop shortcuts** the installer adds are removed (*No desktop
+  shortcuts*, on by default). Shortcuts that were already there are never
+  touched.
+- **"Run as administrator"** that installers tick on the game is taken off
+  again (*Don't let games ask for administrator rights*, on by default),
+  so the game starts without a Windows prompt. Other compatibility
+  settings on it are kept.
+
+Repack installers run as administrator, and Windows only lets a program
+with the same rights stop their windows. Turn on *Run the store as
+administrator*: one prompt when the store opens, instead of one per game,
+and the installers' screens can be held inside the store too.
+
 *Mute installers* (on by default, Windows) silences the music many
 repack installers play while they unpack: each of the setup program's
 own processes is muted in the Windows volume mixer as soon as it starts

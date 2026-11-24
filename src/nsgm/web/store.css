@@ -650,6 +650,15 @@ body[data-input="mouse"] .hints { visibility: hidden; }
   color: var(--warn);
 }
 .detail__info .progress { max-width: 30rem; margin-top: 1.6rem; }
+.detail__options { margin-top: 1.4rem; display: grid; gap: 0.6rem; max-width: 40rem; }
+.option {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  padding: 0.75rem 1rem; border: 0; border-radius: var(--radius); background: var(--shelf);
+  color: var(--paper); text-align: left; font-size: 0.95rem;
+}
+.option small { display: block; color: var(--dim); font-size: 0.8rem; margin-top: 0.15rem; }
+.option .toggle { pointer-events: none; }
+.option:focus-visible, body[data-input="pad"] .option:focus { box-shadow: var(--focus); }
 .detail__status { min-height: 1.45em; margin: 0.8rem 0 1.2rem; color: var(--dim); }
 .detail__status.is-good { color: var(--ready); }
 .detail__status.is-pending { color: var(--attention); }

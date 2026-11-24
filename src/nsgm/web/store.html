@@ -174,6 +174,46 @@
         </div>
         <div class="line">
           <div>
+            <p class="line__title">Let installers add DirectX, Visual C++ and other extras</p>
+            <p class="line__sub">Off: the extra setups a game's installer starts afterwards are stopped, and
+              its file checker too. Most PCs have these already. Each game's page can change it for that game.</p>
+          </div>
+          <button class="toggle nav" id="optExtras" type="button" role="switch" aria-checked="false"><span></span></button>
+        </div>
+        <div class="line">
+          <div>
+            <p class="line__title">Run the store as administrator</p>
+            <p class="line__sub" id="adminState">Repack installers run as administrator, and only a store with the same
+              rights can stop their extra windows and keep their screens inside the store. One Windows
+              prompt when the store opens, instead of one per game. Takes effect next time it opens.</p>
+          </div>
+          <button class="toggle nav" id="optAdmin" type="button" role="switch" aria-checked="false"><span></span></button>
+        </div>
+        <div class="line">
+          <div>
+            <p class="line__title">Check the files after installing</p>
+            <p class="line__sub">Against the list the release came with, quietly, in place of the installer's own
+              checker window. Takes a while for big games.</p>
+          </div>
+          <button class="toggle nav" id="optVerify" type="button" role="switch" aria-checked="false"><span></span></button>
+        </div>
+        <div class="line">
+          <div>
+            <p class="line__title">No desktop shortcuts</p>
+            <p class="line__sub">Shortcuts an installer puts on the desktop are removed. Ones already there are never touched.</p>
+          </div>
+          <button class="toggle nav" id="optNoDesktop" type="button" role="switch" aria-checked="true"><span></span></button>
+        </div>
+        <div class="line">
+          <div>
+            <p class="line__title">Don't let games ask for administrator rights</p>
+            <p class="line__sub">Undoes the "run as administrator" setting installers tick on a game, so it starts
+              without a Windows prompt.</p>
+          </div>
+          <button class="toggle nav" id="optNoAdmin" type="button" role="switch" aria-checked="true"><span></span></button>
+        </div>
+        <div class="line">
+          <div>
             <p class="line__title">Mute installers</p>
             <p class="line__sub">Silences the music some setup programs play while they install. The game itself is never muted.</p>
           </div>
@@ -247,6 +287,7 @@
         <div class="progress" id="detailProgress" hidden><span></span></div>
         <p class="detail__status" id="detailStatus"></p>
         <div class="actions" id="detailActions"></div>
+        <div class="detail__options" id="detailOptions" hidden></div>
       </div>
     </div>
   </div>

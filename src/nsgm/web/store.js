@@ -561,6 +561,7 @@ function renderDetailState() {
 
   const job = state.job || {};
   const signature = `${state.kind}|${job.action || ""}|${S.steamRunning}`;
+  if (signature !== S.detailSignature) renderOptions(game.id, state.kind === "available" || state.kind === "failed");
   if (signature === S.detailSignature) return;
   S.detailSignature = signature;
   const actions = $("detailActions");
@@ -607,6 +608,49 @@ function renderDetailState() {
 
 // ------------------------------------------------------------------ actions
 
+// Each game's install choices, starting from the defaults in Settings, set
+// on its page before pressing Install.
+function installChoices(id) {
+  S.choices = S.choices || {};
+  if (!S.choices[id]) {
+    const settings = (S.data && S.data.settings) || {};
+    S.choices[id] = { extras: !!settings.extras, verify: !!settings.verify };
+  }
+  return S.choices[id];
+}
+
+function renderOptions(id, show) {
+  const box = $("detailOptions");
+  const focusKey = keyOf(document.activeElement);
+  box.innerHTML = "";
+  box.hidden = !show;
+  if (!show) return;
+  const choices = installChoices(id);
+  const rows = [
+    ["extras", "Install DirectX, Visual C++ and other extras",
+     "Off: the extra setups this game's installer starts are stopped."],
+    ["verify", "Check the files afterwards",
+     "Against the release's own list, quietly, instead of its checker window."],
+  ];
+  for (const [field, title, sub] of rows) {
+    const row = make("button", "option nav");
+    row.type = "button";
+    row.dataset.key = `opt:${field}`;
+    const text = make("span", "", title);
+    text.append(make("small", "", sub));
+    const toggle = make("span", "toggle");
+    toggle.setAttribute("aria-checked", choices[field] ? "true" : "false");
+    toggle.append(make("span"));
+    row.append(text, toggle);
+    row.addEventListener("click", () => {
+      choices[field] = !choices[field];
+      toggle.setAttribute("aria-checked", choices[field] ? "true" : "false");
+    });
+    box.append(row);
+  }
+  restoreFocus(box, focusKey);
+}
+
 async function install(id, target = null) {
   const game = S.byId.get(id) || { id, name: "this game" };
   if (target === null && S.data && S.data.library_ready && libraryState().ask && usableFolders().length > 1) {
@@ -628,7 +672,8 @@ async function install(id, target = null) {
     return;
   }
   try {
-    const { job } = await api("/api/store/install", { id, target: target || "" });
+    const choices = installChoices(id);
+    const { job } = await api("/api/store/install", { id, target: target || "", ...choices });
     S.jobs[id] = job;
     S.phases[id] = job.phase;
     applyStatus({ ...currentStatus(), jobs: S.jobs }, true);
@@ -920,6 +965,11 @@ function renderSettings() {
   $("optKeep").setAttribute("aria-checked", settings.keep_downloads ? "true" : "false");
   $("optOptional").setAttribute("aria-checked", settings.optional_files ? "true" : "false");
   $("optMute").setAttribute("aria-checked", settings.mute_installers !== false ? "true" : "false");
+  $("optExtras").setAttribute("aria-checked", settings.extras ? "true" : "false");
+  $("optAdmin").setAttribute("aria-checked", settings.run_as_admin ? "true" : "false");
+  $("optNoDesktop").setAttribute("aria-checked", settings.no_desktop_shortcuts !== false ? "true" : "false");
+  $("optNoAdmin").setAttribute("aria-checked", settings.clear_run_as_admin !== false ? "true" : "false");
+  $("optVerify").setAttribute("aria-checked", settings.verify ? "true" : "false");
   const every = Number(settings.site_pages) === 0;
   $("optAllPages").setAttribute("aria-checked", every ? "true" : "false");
   $("sitePagesLine").hidden = every;
@@ -2021,6 +2071,23 @@ function wire() {
       loadOverview();
     }
   });
+  $("optNoDesktop").dataset.key = "optNoDesktop";
+  $("optNoDesktop").addEventListener("click", () =>
+    saveSettings({ no_desktop_shortcuts: S.data.settings.no_desktop_shortcuts === false }));
+  $("optNoAdmin").dataset.key = "optNoAdmin";
+  $("optNoAdmin").addEventListener("click", () =>
+    saveSettings({ clear_run_as_admin: S.data.settings.clear_run_as_admin === false }));
+  $("optAdmin").dataset.key = "optAdmin";
+  $("optAdmin").addEventListener("click", async () => {
+    const on = !S.data.settings.run_as_admin;
+    if (await saveSettings({ run_as_admin: on }) && on && !S.data.settings.is_admin) {
+      toast("The store asks for administrator rights the next time it opens.");
+    }
+  });
+  $("optExtras").dataset.key = "optExtras";
+  $("optExtras").addEventListener("click", () => saveSettings({ extras: !S.data.settings.extras }));
+  $("optVerify").dataset.key = "optVerify";
+  $("optVerify").addEventListener("click", () => saveSettings({ verify: !S.data.settings.verify }));
   $("optMute").dataset.key = "optMute";
   $("optMute").addEventListener("click", () => saveSettings({ mute_installers: S.data.settings.mute_installers === false }));
   $("optOptional").dataset.key = "optOptional";

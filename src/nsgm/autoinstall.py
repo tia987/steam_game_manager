@@ -757,6 +757,8 @@ class Queue:
             closed_at_finish = False
             finish_seen = 0.0
             finish_pressed_at = 0.0
+            untick_tried = False
+            temp_before = winclean.inno_temp_dirs()
             try:
                 while tree.alive():
                     self._stop_side_programs(task, tree, handled)
@@ -765,18 +767,16 @@ class Queue:
                         # Seen twice in a row a moment apart, so a page that
                         # only flashes past is left alone.
                         if finish_seen and time.time() - finish_seen > 1.0:
-                            done = embed.finish_unticked(tree.pids())
-                            if done["found"]:
-                                closed_at_finish = True
-                                finish_pressed_at = time.time()
-                                names = ", ".join(done["unticked"]) or "nothing was ticked"
-                                self._note(task, f"Last page: unticked {names}, then Finish.")
+                            closed_at_finish, untick_tried = self._close_at_finish(
+                                task, tree, untick_tried)
+                            finish_pressed_at = time.time()
                         finish_seen = finish_seen or time.time()
                     else:
                         finish_seen = 0.0
                     if closed_at_finish and tree.alive() and \
                             time.time() - finish_pressed_at > 10:
-                        # Finish was pressed but it lingers: it is done anyway.
+                        # The wizard is gone but something it started lingers
+                        # (setup.exe tidying up, a console): done anyway.
                         tree.terminate()
                         break
                     if task.cancel:
@@ -798,7 +798,15 @@ class Queue:
                     muter.stop()
                 embed.MANAGER.finish(session)
                 code = tree.exit_code()
+                ran = sorted({n for n in tree.names.values() if n})
                 tree.close()
+                if ran:
+                    self._note(task, "Programs it started: " + ", ".join(ran) + ".")
+                if closed_at_finish:
+                    # The wizard was stopped before it could delete its own
+                    # temporary folder (its unpacking tools, a few MB).
+                    for left in winclean.remove_new_inno_temp(temp_before):
+                        self._note(task, f"Removed the installer's leftover folder {left}.")
                 for shortcut in desktop.tidy():
                     self._note(task, f"Removed the desktop shortcut {Path(shortcut).name}.")
         if task.cancel:
@@ -878,6 +886,39 @@ class Queue:
                     task.message = f"Waiting for {item.name} to be free"
                     self._check(task)
                     time.sleep(2)
+
+    def _close_at_finish(self, task: Task, tree, untick_tried: bool) -> tuple[bool, bool]:
+        """The installer is on its last page: close it without running anything more.
+
+        The install is complete by then. Pressing Finish (or closing the
+        window, which Inno Setup treats the same) runs the ticked boxes, and
+        repacks also open their website from code that runs whenever the
+        installer exits, ticked or not. So the wizard is stopped outright,
+        the way Task Manager would: nothing it would still do runs.
+
+        That needs the same rights as the installer. Without them, the boxes
+        are unticked and Finish pressed instead, which stops the boxes but
+        not the website. Returns (closed, untick_tried).
+        """
+        owner = embed.finish_owner(tree.pids())
+        if owner and tree.stop_branch(owner):
+            name = tree.names.get(owner) or "the installer"
+            self._note(task, f"Last page reached: closed {name} there, so nothing it runs "
+                             "on Finish or on exit (ticked boxes, its website) runs.")
+            return True, untick_tried
+        if untick_tried:
+            return False, True
+        done = embed.finish_unticked(tree.pids())
+        if not done["found"]:
+            return False, True
+        names = ", ".join(done["unticked"]) or "nothing was ticked"
+        self._note(task, f"Last page: could not close the installer (it runs as administrator "
+                         f"and this app does not), so unticked {names} and pressed Finish.")
+        task.warning = ("The installer runs as administrator and this app does not, so it could "
+                        "only untick its last page, not close it: it may still open its website. "
+                        "Turn on Run as administrator in the store's Settings (or Sunshine's "
+                        "Elevated option) so installers are closed on their last page.")
+        return True, True
 
     def _stop_side_programs(self, task: Task, tree, handled: set) -> None:
         """Stop the extras an installer starts, when this install should skip them."""

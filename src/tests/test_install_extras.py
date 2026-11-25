@@ -226,3 +226,60 @@ class FinishedTorrentTests(unittest.TestCase):
                 [{"url": "magnet:?xt=urn:btih:" + "a" * 40}], content.parent, {}, False)
         self.assertEqual(forgotten, [("a" * 40, False)])        # files kept, torrent let go
         self.assertEqual(result["path"], str(content))
+
+
+class FinishPageTests(unittest.TestCase):
+    """The installer's last page: the wizard is closed, so its exit code never runs."""
+
+    class Tree:
+        def __init__(self, refuse=False):
+            self.refuse = refuse
+            self.names = {41: "setup.tmp"}
+            self.stopped = []
+
+        def pids(self):
+            return {40, 41}
+
+        def stop_branch(self, pid):
+            self.stopped.append(pid)
+            return not self.refuse
+
+    def task(self):
+        return autoinstall.Task(id="t", path="setup.exe", name="Game")
+
+    def test_closes_the_wizard_itself(self):
+        tree, task = self.Tree(), self.task()
+        with mock.patch.object(autoinstall.embed, "finish_owner", return_value=41), \
+                mock.patch.object(autoinstall.embed, "finish_unticked") as untick:
+            closed, tried = autoinstall.QUEUE._close_at_finish(task, tree, False)
+        self.assertTrue(closed)
+        self.assertEqual(tree.stopped, [41])
+        untick.assert_not_called()          # Finish is never pressed
+        self.assertIn("closed setup.tmp", task.log[-1])
+        self.assertEqual(task.warning, "")
+
+    def test_without_the_rights_it_unticks_and_says_so(self):
+        tree, task = self.Tree(refuse=True), self.task()
+        with mock.patch.object(autoinstall.embed, "finish_owner", return_value=41), \
+                mock.patch.object(autoinstall.embed, "finish_unticked", return_value={
+                    "found": True, "unticked": ["Visit website"], "pressed": True}) as untick:
+            closed, tried = autoinstall.QUEUE._close_at_finish(task, tree, False)
+            self.assertTrue(closed and tried)
+            untick.assert_called_once()
+            # Asked again later: never unticks (or presses Finish) twice.
+            autoinstall.QUEUE._close_at_finish(task, tree, True)
+            untick.assert_called_once()
+        self.assertIn("Run as administrator", task.warning)
+
+
+class InnoTempTests(unittest.TestCase):
+    def test_only_new_folders_go(self):
+        temp = Path(tempfile.mkdtemp(dir=TEMP))
+        (temp / "is-OLD.tmp").mkdir()
+        (temp / "keep-me").mkdir()
+        with mock.patch.dict(os.environ, {"TEMP": str(temp)}):
+            before = winclean.inno_temp_dirs()
+            (temp / "is-NEW.tmp").mkdir()
+            (temp / "is-NEW.tmp" / "ISDone.dll").write_bytes(b"x")
+            self.assertEqual(winclean.remove_new_inno_temp(before, settle=0), ["is-NEW.tmp"])
+        self.assertEqual(sorted(p.name for p in temp.iterdir()), ["is-OLD.tmp", "keep-me"])

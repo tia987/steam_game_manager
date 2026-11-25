@@ -154,3 +154,42 @@ class DesktopWatch:
         if not self.enabled:
             return []
         return remove_new_shortcuts(self.before, self.started)
+
+
+# -- an installer's temporary folder -------------------------------------------
+#
+# Inno Setup unpacks its helpers (setup.tmp, and a repack's ISDone, unarc and
+# friends) into %TEMP%\is-XXXXX.tmp folders and deletes them as it exits. An
+# installer stopped on its last page never gets to, so the store does it.
+
+def _temp_root() -> Path | None:
+    temp = os.environ.get("TEMP") or os.environ.get("TMP")
+    return Path(temp) if temp else None
+
+
+def inno_temp_dirs() -> set[str]:
+    root = _temp_root()
+    if root is None:
+        return set()
+    try:
+        return {str(p) for p in root.glob("is-*.tmp") if p.is_dir()}
+    except OSError:
+        return set()
+
+
+def remove_new_inno_temp(before: set[str], settle: float = 3.0) -> list[str]:
+    """Delete the is-*.tmp folders that appeared since ``before``. Their names."""
+    import shutil
+    new = inno_temp_dirs() - before
+    if not new:
+        return []
+    time.sleep(settle)          # setup.exe may still be removing its own
+    removed = []
+    for folder in sorted(new):
+        path = Path(folder)
+        if not path.exists():
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        if not path.exists():
+            removed.append(path.name)
+    return removed

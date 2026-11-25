@@ -303,6 +303,20 @@ def finished_page(pids: set) -> bool:
     return any(_finish_button(h) for h in _installer_windows(pids))
 
 
+def finish_owner(pids: set) -> int:
+    """The process showing an installer's last page, or 0.
+
+    For Inno Setup that is setup.tmp, the wizard; setup.exe only waits for
+    it and tidies its temporary folder once it is gone.
+    """
+    if not IS_WINDOWS or not pids:
+        return 0
+    for hwnd in _installer_windows(pids):
+        if _finish_button(hwnd):
+            return _pid(hwnd)
+    return 0
+
+
 def _send(hwnd, msg: int, wparam: int = 0, lparam: int = 0) -> int:
     result = _ULONG_PTR(0)
     if not _SendMessageTimeoutW(hwnd, msg, wparam, lparam, SMTO_ABORTIFHUNG, 1000,

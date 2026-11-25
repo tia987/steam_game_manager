@@ -181,8 +181,10 @@ function applyStatus(status, quiet = false) {
   S.pending = status.pending || [];
   S.pendingRemove = status.pending_remove || [];
   S.busy = !!status.busy;
+  S.streamWatch = status.stream_watch || {};
   S.steamRunning = !!status.steam_running;
   noticeSync(status.sync || {});
+  if (S.data) paintStreamWatch();
 
   for (const [id, job] of Object.entries(S.jobs)) {
     const before = S.phases[id];
@@ -826,6 +828,18 @@ function leaveSteamStep() {
   ]);
 }
 
+function paintStreamWatch() {
+  const watch = S.streamWatch || {};
+  const choice = (S.data && S.data.settings && S.data.settings.disconnect) || "finish";
+  const after = choice === "stay" ? "" : choice === "close" ? " The store closes 10 seconds after Moonlight disconnects."
+    : " The store closes 10 seconds after Moonlight disconnects, or once downloads and installs finish if any are running.";
+  $("disconnectState").textContent = !(S.data && S.data.streaming)
+    ? "Applies when the store is opened as its own Sunshine app."
+    : !watch.log ? "Sunshine's log was not found yet, so a disconnect cannot be noticed. Use the Undo command below, or leave with the store's own Leave."
+    : watch.disconnected && choice === "finish" && S.busy ? "Moonlight disconnected. The store closes when the downloads and installs finish."
+    : `Reading ${watch.log}.${after}`;
+}
+
 async function quit() {
   if (!S.data || !S.data.store_window) {
     window.location.href = "/";
@@ -959,6 +973,7 @@ function renderSettings() {
                              ["optGlyphs", settings.glyphs || "playstation"],
                              ["optSiteMethod", settings.site_method || "auto"],
                              ["optParallel", String(settings.parallel || 2)],
+                             ["optDisconnect", settings.disconnect || "finish"],
                              ["optTorrentEngine", (settings.torrent || {}).engine || "builtin"]]) {
     for (const seg of $(id).querySelectorAll(".seg")) seg.classList.toggle("is-on", seg.dataset.value === value);
   }
@@ -996,6 +1011,8 @@ function renderSettings() {
     : "None found yet. Start Transmission or qBittorrent with remote access on, then press Look for it.";
 
   $("sunshineCommand").textContent = S.data.sunshine_command || "";
+  $("sunshineQuitCommand").textContent = S.data.sunshine_quit_command || "";
+  paintStreamWatch();
   $("streamState").textContent = S.data.streaming
     ? "This store is running as its own Sunshine app. Leaving it ends the stream; Steam restarts quietly behind it when new games need it."
     : "Give the store its own app in Sunshine, next to Steam, to open it straight from Moonlight.";
@@ -2036,7 +2053,8 @@ function wire() {
   $("libraryRestart").addEventListener("click", () => restartFlow(true));
 
   for (const [id, field] of [["optRestart", "restart"], ["optReopen", "reopen"], ["optGlyphs", "glyphs"],
-                             ["optSiteMethod", "site_method"], ["optTorrentEngine", "torrent_engine"]]) {
+                             ["optSiteMethod", "site_method"], ["optTorrentEngine", "torrent_engine"],
+                             ["optDisconnect", "disconnect"]]) {
     for (const seg of $(id).querySelectorAll(".seg")) {
       seg.dataset.key = `${id}:${seg.dataset.value}`;
       seg.addEventListener("click", async () => {

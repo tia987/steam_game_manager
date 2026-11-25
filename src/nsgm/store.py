@@ -115,7 +115,7 @@ def started_by_sunshine() -> bool:
     return sunshine and not through_steam
 
 
-def sunshine_command() -> str:
+def sunshine_command(*options: str) -> str:
     """The command to give Sunshine for an app that opens just the store.
 
     It goes in Sunshine's Command field as one line. A path with a space in
@@ -124,13 +124,54 @@ def sunshine_command() -> str:
     in Moonlight. On Windows the program's short 8.3 path has no spaces, so
     that is shown instead whenever there is one.
     """
-    command, _cwd = self_command("--store", "--streaming")
+    command, _cwd = self_command(*(options or ("--store", "--streaming")))
     if os.name == "nt":
         from . import winproc
         command = [winproc.short_path(part) if (" " in part and os.path.exists(part)) else part
                    for part in command]
     return subprocess.list2cmdline(command) if os.name == "nt" else " ".join(
         f'"{part}"' if " " in part else part for part in command)
+
+
+def sunshine_quit_command() -> str:
+    """For the Undo command of the store's Sunshine app (or Apollo's on-disconnect command)."""
+    return sunshine_command("--quit-store")
+
+
+def disconnect_choice(settings: dict | None = None) -> str:
+    """What a streamed store does when Moonlight disconnects; see streamwatch."""
+    from . import streamwatch
+    settings = settings if settings is not None else library.load_settings()
+    choice = settings.get("store_disconnect")
+    return choice if choice in streamwatch.CHOICES else streamwatch.DEFAULT
+
+
+def close_after_stream() -> None:
+    """Moonlight went away: hand any waiting Steam restart on, then close.
+
+    Games installed while streaming wait for Steam to restart before they
+    show up. With "Restart Steam when I leave the store" chosen, that
+    restart is handed to the helper, which outlives the store; Steam starts
+    again quietly, ready for the Steam app in Moonlight.
+    """
+    try:
+        settings = library.load_settings()
+        state = load_state()
+        if (state["pending"] or state["pending_remove"]) and _steam_running() \
+                and settings.get("store_restart", "exit") in ("exit", "now"):
+            refresh_steam(relaunch=False)
+            time.sleep(1.0)
+    except Exception:
+        pass
+    from . import server
+    server.shutdown()
+
+
+def start_stream_watch() -> None:
+    """While streamed: close the store when Moonlight disconnects."""
+    from . import streamwatch
+    streamwatch.start(close_after_stream, busy, disconnect_choice,
+                      lambda: str(library.load_settings().get("sunshine_log") or ""))
 
 
 class StoreError(RuntimeError):
@@ -2491,6 +2532,7 @@ SETTING_KEYS = {
     "store_site_method": ("auto", "direct", "torrent"),
     "store_torrent_engine": ("builtin", "app"),
     "store_sort": ("newest", "name"),
+    "store_disconnect": ("close", "finish", "stay"),
 }
 
 
@@ -2522,6 +2564,7 @@ def store_settings(settings: dict | None = None) -> dict:
         "reopen": settings.get("store_reopen", "bigpicture"),
         "glyphs": _glyphs(settings),
         "sort": settings.get("store_sort", "newest"),
+        "disconnect": disconnect_choice(settings),
         "mute_installers": settings.get("mute_installers", True) is not False,
         "no_desktop_shortcuts": settings.get("no_desktop_shortcuts", True) is not False,
         "run_as_admin": bool(settings.get("run_as_admin")),
@@ -2621,6 +2664,7 @@ def overview(force: bool = False) -> dict:
         "store_window": STORE_WINDOW,
         "streaming": STREAMING,
         "sunshine_command": sunshine_command(),
+        "sunshine_quit_command": sunshine_quit_command(),
         "platform": platform.system(),
         **status(),
     }
@@ -2644,7 +2688,13 @@ def status() -> dict:
         "embed": embed.MANAGER.current(),
         "steam_running": _steam_running(),
         "sync": site_progress(),
+        "stream_watch": _stream_watch(),
     }
+
+
+def _stream_watch() -> dict:
+    from . import streamwatch
+    return streamwatch.status() if STREAMING else {}
 
 
 def site_progress() -> dict:

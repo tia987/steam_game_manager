@@ -501,6 +501,30 @@ mouse.
   - **Leave** closes the store completely, which ends that stream, so you
     can start your Steam app in Moonlight right after. Quitting the app
     from Moonlight's menu closes the store as well.
+  - **Disconnecting** is different. L1 + R1 + Select + Start, or closing
+    Moonlight, only disconnects: Sunshine keeps the app running so the
+    stream can be resumed, runs no Undo command, and tells nobody but its
+    log. So while streamed, the store reads the end of Sunshine's log
+    (`C:\Program Files\Sunshine\config\sunshine.log`, Apollo's too, or
+    the file named by `SUNSHINE_LOG` or the `sunshine_log` setting). If
+    the log says `CLIENT DISCONNECTED` and the client has not reconnected
+    within 10 seconds, the store closes, which also ends Sunshine's
+    session. Settings → *When Moonlight disconnects*: **Close after
+    downloads finish** (the default: closes at once when nothing is
+    running, otherwise once downloads and installs are done, so an
+    installer is never cut off halfway), **Close straight away**
+    (downloads pick up where they stopped next time) or **Keep running**.
+    Games waiting for a Steam restart get it on the way out, with
+    *Restart Steam: When I leave the store* chosen.
+  - **`--quit-store`** closes a running store from outside and exits:
+    `nonsteam-game-manager --quit-store` (Settings shows the exact line).
+    It asks the store to close the same way its Leave button does, waits
+    up to 10 seconds, and only then ends the process. A game manager
+    window that is not the store is left alone. Use it as the Game Store
+    app's Undo command in Sunshine, as a client's disconnect command in
+    Apollo, or from any script. Each running copy leaves a note (port and
+    token) in the config folder's `running` folder for it; if there is
+    none it looks on the usual ports.
   - The store is not something Steam launched, so when new games need
     Steam restarted it restarts Steam quietly in the background and stays
     open, instead of closing and reopening itself mid-stream.

@@ -614,7 +614,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_index(self, name: str = "index.html") -> None:
         page = (WEB_DIR / name).read_text("utf-8")
-        page = page.replace("</head>", f'<meta name="nsgm-token" content="{TOKEN}">\n</head>', 1)
+        page = page.replace("</head>", f'<meta name="nsgm-token" content="{TOKEN}">\n'
+                            f'<meta name="nsgm-mode" content="{STATE.get("mode") or "manager"}">\n'
+                            '</head>', 1)
         blob = page.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -775,11 +777,9 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == "/api/quit":
                 # Browser mode has no window to close, so there has to be a
-                # way out that is not Task Manager.
-                def stop() -> None:
-                    time.sleep(0.4)
-                    os._exit(0)
-                threading.Thread(target=stop, daemon=True).start()
+                # way out that is not Task Manager. ``nsgm --quit-store``
+                # comes in here too.
+                threading.Thread(target=shutdown, args=(0.4,), daemon=True).start()
                 return json_response(self, {"stopping": True})
 
             if path.startswith("/api/store/"):
@@ -1375,12 +1375,31 @@ def add_torrent(url: str, name: str = "") -> tuple[dict, int]:
             "message": f"Downloading with {client.label}{where}."}, 200
 
 
+def shutdown(delay: float = 0.0) -> None:
+    """Close the app: installer windows given back first, then gone.
+
+    Downloads stop where they are and pick up from there next time; the
+    built-in torrent downloader stops with the app.
+    """
+    if delay:
+        time.sleep(delay)
+    try:
+        embed.MANAGER.release_all()
+    except Exception:
+        pass
+    from . import running
+    running.withdraw()
+    os._exit(0)
+
+
 def serve(port: int = 8731, open_browser: bool = True, url: str = "") -> None:
     autoinstall.QUEUE.on_staged = stage_games
     autoinstall.QUEUE.load()
     autoinstall.QUEUE.start()
     autoinstall.WATCHER.start()
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    from . import running
+    running.announce(port, TOKEN, STATE.get("mode") or "manager")
     url = url or f"http://127.0.0.1:{port}/"
     print(f"  Game manager ready at {url}")
     print("  Leave this window open. Press Ctrl+C to stop.\n")
@@ -1392,3 +1411,4 @@ def serve(port: int = 8731, open_browser: bool = True, url: str = "") -> None:
         print("\n  Stopped.")
     finally:
         httpd.server_close()
+        running.withdraw()

@@ -8,7 +8,10 @@ import sys
 import time
 from pathlib import Path
 
-from nsgm import embed, winproc
+# Run as a script from tests/windows: the package lives two folders up.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from nsgm import embed, winproc  # noqa: E402
 
 installer, folder = sys.argv[1], Path(sys.argv[2])
 launched = winproc.launch(installer, f'/DIR="{folder}" /SP-', cwd=str(Path(installer).parent))

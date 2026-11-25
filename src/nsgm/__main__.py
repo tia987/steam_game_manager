@@ -35,6 +35,9 @@ def main() -> int:
     parser.add_argument("--streaming", action="store_true",
                         help="with --store: the store is its own Moonlight/Sunshine app, so "
                              "leaving it ends the stream")
+    parser.add_argument("--quit-store", action="store_true",
+                        help="close the store if it is running, then exit; for Sunshine's "
+                             "Undo command or any script")
     parser.add_argument("--version", action="version", version=f"nsgm {__version__}")
     # Run by the store as a separate process: close Steam, write the
     # shortcuts that were waiting, start Steam again.
@@ -46,6 +49,10 @@ def main() -> int:
     # prompt can never turn into a loop of relaunches.
     parser.add_argument("--no-elevate", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    if args.quit_store:
+        from . import running
+        return running.quit_store()
 
     if args.steam_refresh:
         # No window, no server: this outlives the store and Steam both.
@@ -102,9 +109,14 @@ def main() -> int:
 
     port = free_port(args.port)
     url = f"http://127.0.0.1:{port}/"
+    server.STATE["mode"] = "store" if args.store else "manager"
     if args.store:
         url += "store"
         store.STORE_WINDOW = not args.browser and not args.no_browser
+    if streaming:
+        # Leaving Moonlight with its button combo only disconnects; Sunshine
+        # keeps the store running. Its log says when that happens.
+        store.start_stream_watch()
 
     if args.no_browser:
         server.serve(port, open_browser=False)
@@ -118,13 +130,21 @@ def main() -> int:
         server.STATE["windowed"] = True
         embed.ENABLED = True
         desktop.run(url, lambda: server.serve(port, open_browser=False), True,
-                    on_closing=embed.MANAGER.release_all,
+                    on_closing=_closing,
                     fullscreen=args.store and not args.windowed,
                     title=desktop.STORE_TITLE if args.store else desktop.TITLE,
                     on_shown=_store_shown if args.store else None)
     else:
         server.serve(port, open_browser=True, url=url)
     return 0
+
+
+def _closing() -> None:
+    from . import running
+    try:
+        embed.MANAGER.release_all()
+    finally:
+        running.withdraw()
 
 
 def _store_shown(window) -> None:

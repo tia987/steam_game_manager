@@ -108,6 +108,22 @@
         </ol>
         <p class="line__sub">Leaving the store then ends that stream, so you can start your Steam app in
           Moonlight straight after, and quitting the app from Moonlight closes the store too.</p>
+
+        <p class="label">When Moonlight disconnects</p>
+        <p class="line__sub">L1 + R1 + Select + Start, or closing Moonlight, only disconnects: Sunshine keeps
+          the store running in case you come back. The store notices from Sunshine's log and closes
+          itself if you have not reconnected within 10 seconds.</p>
+        <div class="segmented" id="optDisconnect">
+          <button class="seg nav" type="button" data-value="finish">Close after downloads finish</button>
+          <button class="seg nav" type="button" data-value="close">Close straight away</button>
+          <button class="seg nav" type="button" data-value="stay">Keep running</button>
+        </div>
+        <p class="line__sub" id="disconnectState"></p>
+
+        <p class="label">Undo command for the same app (optional)</p>
+        <p class="command" id="sunshineQuitCommand"></p>
+        <p class="line__sub">Closes the store from outside. Put it under Command Preparations → Undo of the
+          Game Store app, or in any script; in Apollo it also works as a client's disconnect command.</p>
       </div>
 
       <div class="group">

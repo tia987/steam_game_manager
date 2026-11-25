@@ -193,6 +193,13 @@ jobs:
           time.sleep(2.5)
           muter.stop()
           print('installer muting fine')
+          from nsgm import padbridge, embed
+          dll = padbridge._library()
+          assert dll is not None, 'no XInput'
+          state = padbridge.XINPUT_STATE()
+          print('XInput slot 0 answers', dll.XInputGetState(0, state))
+          print('finished page among our windows:', embed.finished_page({os.getpid()}))
+          print('controller bridge and finish-page check fine')
           "
 
       # The store's behaviour is covered by offline tests with local fake

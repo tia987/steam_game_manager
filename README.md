@@ -492,7 +492,12 @@ mouse.
   starts the store with administrator rights itself, without a Windows
   prompt. The store never asks for the rights itself while streaming,
   even with *Run the store as administrator* on, because the prompt would
-  take over the stream and leave the store without input. Then:
+  take over the stream and leave the store without input. Running as
+  administrator can also cut the browser engine off from Xbox-type pads
+  (it reads them through Windows.Gaming.Input), so the store also reads
+  XInput itself and uses that whenever the engine sees no controller -
+  only while the store is the window in front. Sunshine's emulated pad
+  is an Xbox 360 one unless Sunshine is set to emulate a DualShock. Then:
   - **Leave** closes the store completely, which ends that stream, so you
     can start your Steam app in Moonlight right after. Quitting the app
     from Moonlight's menu closes the store as well.
@@ -623,6 +628,11 @@ with each (Windows):
   files after installing*, in Settings or on a game's page, does the same
   check itself against the release's `.md5`/`.sfv` list, quietly, and the
   result is shown when the install finishes.
+- **The installer's last page.** Its ticked boxes (launch the game,
+  visit the repacker's website, read me) run only when Finish is pressed,
+  and the installation is complete by then. So when an Inno Setup or NSIS
+  installer reaches that page, the store closes it: nothing there runs,
+  and nothing needs clicking.
 - **Desktop shortcuts** the installer adds are removed (*No desktop
   shortcuts*, on by default). Shortcuts that were already there are never
   touched.

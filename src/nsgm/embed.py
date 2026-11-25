@@ -83,6 +83,8 @@ if IS_WINDOWS:
     _ShowWindow = _bind("ShowWindow", [wintypes.HWND, ctypes.c_int], wintypes.BOOL)
     _SetForegroundWindow = _bind("SetForegroundWindow", [wintypes.HWND], wintypes.BOOL)
     _GetForegroundWindow = _bind("GetForegroundWindow", [], wintypes.HWND)
+    _EnumChildWindows = _bind("EnumChildWindows", [wintypes.HWND, _WNDENUMPROC, wintypes.LPARAM],
+                              wintypes.BOOL)
     _BringWindowToTop = _bind("BringWindowToTop", [wintypes.HWND], wintypes.BOOL)
     _keybd_event = _bind("keybd_event", [wintypes.BYTE, wintypes.BYTE, wintypes.DWORD,
                                          ctypes.c_void_p], None)
@@ -233,6 +235,65 @@ def _top_level_windows() -> list[int]:
 
     _EnumWindows(collect, 0)
     return found
+
+
+def _child_windows(parent) -> list[int]:
+    found: list[int] = []
+
+    @_WNDENUMPROC
+    def collect(hwnd, _lparam):
+        found.append(int(hwnd))
+        return True
+
+    _EnumChildWindows(parent, collect, 0)
+    return found
+
+
+# The last button of an installer, in the languages repacks come in.
+FINISH_WORDS = {
+    "finish", "done", "fertig stellen", "fertigstellen", "terminer", "fine", "finalizar",
+    "concluir", "voltooien", "beëindigen", "zakończ", "готово", "завершить", "完成", "完了",
+    "완료", "avsluta", "afslut", "fullfør", "valmis", "dokončit", "befejezés", "bitir",
+    "τέλος", "încheiere", "završi", "dokončať",
+}
+
+
+def _caption(hwnd) -> str:
+    return _text(hwnd).replace("&", "").strip().rstrip(".").lower()
+
+
+def finished_page(pids: set) -> bool:
+    """Whether an installer of these processes is showing its last page.
+
+    Inno Setup's wizard (class TWizardForm) and NSIS' dialog both end on a
+    page whose main button says Finish; the installation is complete by
+    then, and the ticked boxes on it - launch the game, visit a website,
+    read me - only run once that button is pressed.
+    """
+    if not IS_WINDOWS or not pids:
+        return False
+    windows = [h for h in _top_level_windows() if _pid(h) in pids]
+    host = find_host()
+    if host:
+        # Held installer windows are children of the store's window now.
+        windows += [h for h in _child_windows(host)
+                    if _pid(h) in pids and int(_GetAncestor(h, GA_PARENT) or 0) == host]
+    for hwnd in windows:
+        if not _IsWindowVisible(hwnd):
+            continue
+        kind = _class(hwnd)
+        kids = _child_windows(hwnd)
+        inno = kind == "TWizardForm"
+        nsis = kind == "#32770" and any(_text(k).startswith("Nullsoft Install System")
+                                        for k in kids)
+        if not (inno or nsis):
+            continue
+        for kid in kids:
+            if (_IsWindowVisible(kid) and _IsWindowEnabled(kid)
+                    and _class(kid) in ("TNewButton", "TButton", "Button")
+                    and _caption(kid) in FINISH_WORDS):
+                return True
+    return False
 
 
 def find_host() -> int:

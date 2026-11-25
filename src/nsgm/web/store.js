@@ -1760,7 +1760,19 @@ document.addEventListener("mousemove", (event) => {
 
 // Gamepads -------------------------------------------------------------------
 
-const PAD = { previous: {}, repeatAt: {}, connected: false, detected: "xbox" };
+const PAD = { previous: {}, repeatAt: {}, connected: false, detected: "xbox", native: null };
+
+// Pads read directly through XInput by the app, used when the browser
+// engine reports none (it can lose them when the app runs as administrator).
+window.nativePad = (state) => {
+  PAD.native = state;
+  const busy = state && (state.buttons.some(Boolean) || state.axes.some((v) => Math.abs(v) > 0.5));
+  if (busy && !PAD.connected) {
+    setInput("pad");
+    PAD.connected = true;
+    toast("Controller connected");
+  }
+};
 const REPEATS = new Set(["up", "down", "left", "right", "sup", "sdown", "sleft", "sright", "x"]);
 const PAD_BUTTONS = ["a", "b", "x", "y", "lb", "rb", "view", "menu",
                      "up", "down", "left", "right", "sup", "sdown", "sleft", "sright"];
@@ -1780,6 +1792,10 @@ function readPads() {
   const state = {};
   let active = null;
   const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
+  if (!pads.length && PAD.native) {
+    pads.push({ id: "XInput", axes: PAD.native.axes,
+                buttons: PAD.native.buttons.map((pressed) => ({ pressed })) });
+  }
   for (const pad of pads) {
     const pressed = (index) => !!(pad.buttons[index] && pad.buttons[index].pressed);
     const x = pad.axes[0] || 0;

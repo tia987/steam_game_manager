@@ -89,7 +89,7 @@ def run(url: str, serve, prefer_window: bool = True, on_closing=None,
                 pass                     # an old pywebview without events
         if on_shown is not None:
             def shown():
-                threading.Thread(target=on_shown, daemon=True).start()
+                threading.Thread(target=on_shown, args=(window,), daemon=True).start()
             try:
                 window.events.shown += shown
             except AttributeError:

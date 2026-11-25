@@ -1121,7 +1121,9 @@ def _install_and_record(job: StoreJob, game: dict, settings: dict, folder: Path,
                                  folder_name=placement.plain_folder_name(game["name"]),
                                  # The installer's own file checker always waits for
                                  # clicks; the store checks the files itself instead.
-                                 skip_redists=not job.extras, skip_checkers=True)
+                                 skip_redists=not job.extras, skip_checkers=True,
+                                 # Its last page's boxes (launch, website) are never wanted.
+                                 skip_finish=True)
     job.task = task.id
     task = _follow(job, task.id)
     checked = _check_files(job, task.target_dir) if job.verify else None

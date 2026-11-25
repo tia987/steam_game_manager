@@ -121,11 +121,25 @@ def main() -> int:
                     on_closing=embed.MANAGER.release_all,
                     fullscreen=args.store and not args.windowed,
                     title=desktop.STORE_TITLE if args.store else desktop.TITLE,
-                    # The store must be the window the controller reaches.
-                    on_shown=embed.take_foreground if args.store else None)
+                    on_shown=_store_shown if args.store else None)
     else:
         server.serve(port, open_browser=True, url=url)
     return 0
+
+
+def _store_shown(window) -> None:
+    """Once the store's window is up: put it in front, and read pads directly too.
+
+    It has to be the foreground window for the controller, phone keyboard
+    and touches to reach it; and when it runs as administrator the browser
+    engine can lose Xbox-type pads, so XInput is read alongside.
+    """
+    from . import padbridge
+    try:
+        padbridge.start(window)
+    except Exception:
+        pass
+    embed.take_foreground()
 
 
 if __name__ == "__main__":

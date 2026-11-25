@@ -146,3 +146,30 @@ class StreamingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PadBridgeTests(unittest.TestCase):
+    def test_xinput_state_becomes_the_standard_layout(self):
+        from types import SimpleNamespace
+        from nsgm import padbridge
+        pad = SimpleNamespace(wButtons=0x1000 | 0x0001 | 0x0010, bLeftTrigger=0, bRightTrigger=255,
+                              sThumbLX=32767, sThumbLY=32767, sThumbRX=1000, sThumbRY=-32767)
+        state = padbridge.snapshot(pad)
+        self.assertTrue(state["buttons"][0])        # A
+        self.assertTrue(state["buttons"][12])       # d-pad up
+        self.assertTrue(state["buttons"][9])        # Start = menu
+        self.assertTrue(state["buttons"][7])        # right trigger
+        self.assertFalse(state["buttons"][1])
+        self.assertEqual(state["axes"], [1.0, -1.0, 0.0, 1.0])   # stick up is negative, as in browsers
+        both = padbridge.merge([state, padbridge.snapshot(SimpleNamespace(
+            wButtons=0x2000, bLeftTrigger=0, bRightTrigger=0, sThumbLX=0, sThumbLY=0,
+            sThumbRX=0, sThumbRY=0))])
+        self.assertTrue(both["buttons"][0] and both["buttons"][1])
+        self.assertIsNone(padbridge.merge([]))
+
+    def test_finish_buttons_in_several_languages(self):
+        from nsgm import embed
+        for word in ("finish", "fertig stellen", "terminer", "fine", "valmis"):
+            self.assertIn(word, embed.FINISH_WORDS)
+        self.assertNotIn("next", embed.FINISH_WORDS)
+        self.assertNotIn("install", embed.FINISH_WORDS)

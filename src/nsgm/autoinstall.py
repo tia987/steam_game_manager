@@ -134,6 +134,7 @@ class Task:
     size_override: int = 0
     skip_redists: bool = False      # stop DirectX/Visual C++/... setups the installer starts
     skip_checkers: bool = False     # stop file checkers that pop up after installing
+    skip_finish: bool = False       # close the installer on its last page, ticked boxes unrun
     installer_asks: bool = False   # classic install with no folder: its screens choose
     notes: list = field(default_factory=list)
     warning: str = ""
@@ -277,7 +278,8 @@ class Queue:
     def add(self, path: str, name: str = "", target_root: str = "", folder_name: str = "",
             mode: str = "", ssd: str = "", size: int = 0, auto: bool = False,
             origin: str = "manual", installer_asks: bool = False,
-            skip_redists: bool = False, skip_checkers: bool = False) -> Task:
+            skip_redists: bool = False, skip_checkers: bool = False,
+            skip_finish: bool = False) -> Task:
         source = str(Path(path).expanduser())
         with self.lock:
             for task in self.tasks:
@@ -296,6 +298,7 @@ class Queue:
                     task.size_override = int(size or 0)
                     task.installer_asks, task.auto = installer_asks, False
                     task.skip_redists, task.skip_checkers = skip_redists, skip_checkers
+                    task.skip_finish = skip_finish
                     task.status, task.action, task.warning = "queued", "", ""
                     task.message = "Waiting its turn" if self.current else "Starting"
                     self.save()
@@ -308,6 +311,7 @@ class Queue:
                         mode=mode, auto=auto, origin=origin, ssd_override=ssd,
                         size_override=int(size or 0), installer_asks=installer_asks,
                         skip_redists=skip_redists, skip_checkers=skip_checkers,
+                        skip_finish=skip_finish,
                         created=time.time())
             task.message = "Waiting its turn" if self.current else "Starting"
             self.tasks.append(task)
@@ -744,9 +748,25 @@ class Queue:
                                         enabled=_mute_installers())
             last_size = 0.0
             handled: set = set()
+            closed_at_finish = False
+            finish_seen = 0.0
             try:
                 while tree.alive():
                     self._stop_side_programs(task, tree, handled)
+                    if task.skip_finish and embed.finished_page(tree.pids()):
+                        # Seen twice in a row a moment apart, so a page that
+                        # only flashes past is left alone.
+                        if finish_seen and time.time() - finish_seen > 1.0:
+                            stopped, _why = tree.terminate()
+                            if stopped:
+                                closed_at_finish = True
+                                self._note(task, "Closed the installer on its last page, so "
+                                                 "nothing ticked there runs (launching the "
+                                                 "game, opening a website).")
+                                break
+                        finish_seen = finish_seen or time.time()
+                    else:
+                        finish_seen = 0.0
                     if task.cancel:
                         stopped, why = tree.terminate()
                         if not stopped:
@@ -777,6 +797,8 @@ class Queue:
             for program in winclean.clear_run_as_admin(str(target)):
                 self._note(task, f"{Path(program).name} no longer asks for administrator rights.")
 
+        if closed_at_finish:
+            code = 0                 # it had finished; only its last page was skipped
         ok, said = installers.interpret(task.framework, code)
         self._note(task, f"The installer exited{'' if code is None else f' with code {code}'}.")
         if said:

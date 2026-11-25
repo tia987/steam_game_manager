@@ -13,12 +13,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from nsgm import embed, winproc  # noqa: E402
 
-installer, folder = sys.argv[1], Path(sys.argv[2])
+installer, folder = str(Path(sys.argv[1]).resolve()), Path(sys.argv[2]).resolve()
 launched = winproc.launch(installer, f'/DIR="{folder}" /SP-', cwd=str(Path(installer).parent))
 tree = winproc.ProcessTree(launched)
 deadline = time.time() + 120
 result = None
+
+
+def press_through(pids):
+    """Stand in for the person on the pages before the last: Inno never
+    skips its Ready page when it is the only one."""
+    for hwnd in embed._installer_windows(pids):
+        for kid in embed._child_windows(hwnd):
+            if (embed._IsWindowVisible(kid) and embed._IsWindowEnabled(kid)
+                    and embed._class(kid) in embed.BUTTON_CLASSES
+                    and embed._caption(kid) in ("install", "next", "ok")):
+                embed._send(kid, embed.BM_CLICK)
+                return
+
+
 while tree.alive() and time.time() < deadline:
+    if not embed.finished_page(tree.pids()):
+        press_through(tree.pids())
     if embed.finished_page(tree.pids()):
         time.sleep(1)
         result = embed.finish_unticked(tree.pids())

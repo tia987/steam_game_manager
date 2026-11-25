@@ -148,6 +148,9 @@ class Engine:
                 "--bt-remove-unselected-file=true",
                 # Pick up where a download stopped, under the same names.
                 "--continue=true", "--auto-file-renaming=false", "--allow-overwrite=false",
+                # Files already on disk (an earlier try, a restart) are
+                # checked piece by piece and kept, not downloaded again.
+                "--check-integrity=true",
                 "--file-allocation=none", "--disk-cache=32M",
                 f"--max-concurrent-downloads={MAX_ACTIVE}",
                 "--enable-dht=true", f"--dht-file-path={folder / 'dht.dat'}",

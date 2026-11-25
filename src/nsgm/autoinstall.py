@@ -709,11 +709,16 @@ class Queue:
             argv = None
             if target is not None:
                 target.parent.mkdir(parents=True, exist_ok=True)
+            run_target = str(target) if target is not None else ""
+            if info["kind"] == "installer" and os.name == "nt":
+                info = self._plain_paths(task, info, target)
+                run_target = info.get("run_target") or run_target
+                self._wait_for_data(task, Path(info["source"]).parent)
             if task.mode == "quiet":
                 log = str(library.config_dir() / f"install-{task.id}.log")
-                command = installers.quiet_command(info, str(target), log)
+                command = installers.quiet_command(info, run_target, log)
             else:
-                command = installers.classic_command(info, str(target) if target else "")
+                command = installers.classic_command(info, run_target)
 
         task.message = "Waiting for the current program to finish"
         with PROGRAM_LOCK:
@@ -787,6 +792,58 @@ class Queue:
                                "Try again through its own screens.")
         if said:
             task.warning = said
+
+    def _plain_paths(self, task: Task, info: dict, target: Path | None) -> dict:
+        """Give a setup program paths it can open.
+
+        Repack unpackers (ISDone with unarc.dll) cannot read or write a path
+        with characters outside plain ASCII, such as a user name with an
+        accent. Windows' short 8.3 names spell any path in ASCII, so the
+        setup program is started, and told to install, through those.
+        """
+        info = dict(info)
+        source = str(info["source"])
+        if not source.isascii():
+            short = winproc.short_path(source)
+            if short != source and short.isascii():
+                info["source"] = short
+                self._note(task, f"Starting the installer as {short}, a path it can read.")
+        if target is not None and not str(target).isascii():
+            target.mkdir(parents=True, exist_ok=True)
+            short = winproc.short_path(str(target))
+            if short != str(target) and short.isascii():
+                info["run_target"] = short
+                self._note(task, f"Installing through {short}, a path the installer can write.")
+        if not str(info["source"]).isascii():
+            task.warning = ("The installer's folder has letters outside plain English in its "
+                            "path; some repack installers cannot read their files there. If it "
+                            "fails, pick a download folder with a plain name.")
+        return info
+
+    def _wait_for_data(self, task: Task, folder: Path, patience: float = 90) -> None:
+        """Wait until the setup program's data files can be read.
+
+        Right after a download, a file can still be held open by the program
+        that wrote it or by a virus scanner, and a setup program that cannot
+        open its data stops with "can't open fg-01.bin".
+        """
+        data = [p for p in folder.iterdir()
+                if p.is_file() and p.suffix.lower() in (".bin", ".cab", ".dat")]
+        deadline = time.time() + patience
+        for item in data:
+            while True:
+                try:
+                    with open(item, "rb") as handle:
+                        handle.read(1)
+                    break
+                except OSError as exc:
+                    if time.time() > deadline:
+                        raise RuntimeError(f"{item.name} cannot be opened ({exc.strerror or exc}); "
+                                           "something still has it open, or it was removed.") \
+                            from exc
+                    task.message = f"Waiting for {item.name} to be free"
+                    self._check(task)
+                    time.sleep(2)
 
     def _stop_side_programs(self, task: Task, tree, handled: set) -> None:
         """Stop the extras an installer starts, when this install should skip them."""

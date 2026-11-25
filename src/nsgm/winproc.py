@@ -89,6 +89,8 @@ if IS_WINDOWS:
 
     _kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     _kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    _kernel32.GetShortPathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+    _kernel32.GetShortPathNameW.restype = wintypes.DWORD
     _kernel32.GetProcessId.argtypes = [wintypes.HANDLE]
     _kernel32.GetProcessId.restype = wintypes.DWORD
     _kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -406,6 +408,27 @@ class ProcessTree:
 # --------------------------------------------------------------------------
 # restarting with administrator rights
 # --------------------------------------------------------------------------
+
+def short_path(path: str) -> str:
+    """The 8.3 form of an existing path (C:\\GAMES~1\\...), or the path as it is.
+
+    For setup programs that cannot open paths with characters outside plain
+    ASCII. Windows makes 8.3 names on the system drive; on drives where it
+    does not, the path comes back unchanged.
+    """
+    if not IS_WINDOWS or not path:
+        return path
+    try:
+        size = _kernel32.GetShortPathNameW(str(path), None, 0)
+        if not size:
+            return path
+        buffer = ctypes.create_unicode_buffer(size)
+        if _kernel32.GetShortPathNameW(str(path), buffer, size):
+            return buffer.value
+    except (OSError, AttributeError):
+        pass
+    return path
+
 
 _SYNCHRONIZE = 0x00100000
 _INFINITE = 0xFFFFFFFF

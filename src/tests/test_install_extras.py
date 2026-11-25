@@ -147,3 +147,82 @@ class StoreOptionsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlainPathTests(unittest.TestCase):
+    def test_titles_become_plain_short_folder_names(self):
+        from nsgm import placement
+        name = placement.plain_folder_name("Aqueduct 117: Civitas Nova – Gold Edition, v3.0 + 6 DLCs")
+        self.assertTrue(name.isascii())
+        self.assertNotIn(":", name)
+        self.assertLessEqual(len(name), 60)
+        self.assertEqual(placement.plain_folder_name("Pokémon’s Café™ — Deluxe"), "Pokemon's Cafe - Deluxe")
+        self.assertEqual(placement.plain_folder_name("日本語"), "Game")
+
+    def test_an_old_download_folder_is_carried_over(self):
+        folder = Path(tempfile.mkdtemp(dir=TEMP))
+        old = folder / "Aqueduct 117_ Civitas Nova – Gold Edition"
+        (old / "torrent").mkdir(parents=True)
+        (old / "torrent" / "fg-01.bin").write_bytes(b"data")
+        home = store._game_home(folder, "Aqueduct 117: Civitas Nova – Gold Edition")
+        self.assertTrue(str(home.name).isascii())
+        self.assertTrue((home / "torrent" / "fg-01.bin").is_file())
+        self.assertFalse(old.exists())
+
+    def test_installer_runs_through_short_paths_when_needed(self):
+        queue = autoinstall.Queue.__new__(autoinstall.Queue)
+        queue._note = lambda task, text: None
+        task = autoinstall.Task(id="t", path="x")
+        target = Path(tempfile.mkdtemp(dir=TEMP)) / "Jäätelö"
+        shorts = {"C:/Lataukset/Peli/setup.exe": "C:/LATAUK~1/Peli/setup.exe"}
+        with mock.patch.object(autoinstall.winproc, "short_path",
+                               side_effect=lambda p: shorts.get(p, "C:/JAATEL~1" if "Jäätelö" in p else p)):
+            info = queue._plain_paths(task, {"source": "C:/Lataukset/Peli/setup.exe"}, target)
+        self.assertEqual(info["source"], "C:/Lataukset/Peli/setup.exe")   # already plain
+        self.assertEqual(info["run_target"], "C:/JAATEL~1")
+        self.assertTrue(target.is_dir())
+
+    def test_waits_for_data_files_that_are_still_held(self):
+        queue = autoinstall.Queue.__new__(autoinstall.Queue)
+        queue._check = lambda task: None
+        task = autoinstall.Task(id="t", path="x")
+        folder = Path(tempfile.mkdtemp(dir=TEMP))
+        (folder / "fg-01.bin").write_bytes(b"x")
+        real_open = open
+        attempts = []
+
+        def flaky(path, mode="r", *args, **kwargs):
+            if str(path).endswith("fg-01.bin") and len(attempts) < 2:
+                attempts.append(1)
+                raise PermissionError(13, "in use")
+            return real_open(path, mode, *args, **kwargs)
+        with mock.patch("builtins.open", flaky), mock.patch.object(autoinstall.time, "sleep"):
+            queue._wait_for_data(task, folder)
+        self.assertEqual(len(attempts), 2)
+        (folder / "fg-01.bin").unlink()
+        (folder / "fg-02.bin").write_bytes(b"x")
+        with mock.patch("builtins.open", side_effect=PermissionError(13, "in use")), \
+                mock.patch.object(autoinstall.time, "sleep"):
+            with self.assertRaises(RuntimeError) as raised:
+                queue._wait_for_data(task, folder, patience=0)
+        self.assertIn("fg-02.bin", str(raised.exception))
+
+
+class FinishedTorrentTests(unittest.TestCase):
+    def test_built_in_downloader_lets_go_before_the_installer_starts(self):
+        content = Path(tempfile.mkdtemp(dir=TEMP)) / "Game"
+        content.mkdir()
+        (content / "setup.exe").write_bytes(b"MZ")
+        (content / "fg-01.bin").write_bytes(b"x")
+        client = mock.Mock(leech_only=True)
+        got = store.TorrentResult(content, client, "a" * 40, ours=True)
+        forgotten = []
+        with mock.patch.object(store, "_torrent_download", return_value=got), \
+                mock.patch.object(store, "_forget_torrent",
+                                  side_effect=lambda c, h, delete_files=False: forgotten.append(
+                                      (h, delete_files))):
+            result, shared = store._release_by_torrent(
+                store.StoreJob(id="g", name="Game"), {"name": "Game"},
+                [{"url": "magnet:?xt=urn:btih:" + "a" * 40}], content.parent, {}, False)
+        self.assertEqual(forgotten, [("a" * 40, False)])        # files kept, torrent let go
+        self.assertEqual(result["path"], str(content))

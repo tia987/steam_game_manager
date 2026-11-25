@@ -1103,6 +1103,7 @@ def _install_and_record(job: StoreJob, game: dict, settings: dict, folder: Path,
     task = autoinstall.QUEUE.add(result["path"], name=game["name"], mode="quiet",
                                  origin="store", size=int(game.get("size") or 0),
                                  target_root=job.target,
+                                 folder_name=placement.plain_folder_name(game["name"]),
                                  # The installer's own file checker always waits for
                                  # clicks; the store checks the files itself instead.
                                  skip_redists=not job.extras, skip_checkers=True)
@@ -1187,8 +1188,24 @@ PARTS_FILE = ".nsgm-parts.json"
 
 
 def _folder_name(name: str) -> str:
-    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(". ")
-    return cleaned[:80] or "Game"
+    """The download folder for a game: plain ASCII and short, for old unpackers."""
+    return placement.plain_folder_name(name)
+
+
+def _game_home(folder: Path, name: str) -> Path:
+    """A game's download folder, moving one made under the old naming into place.
+
+    Older versions named it after the title as written, "–" and all; a
+    download already there is carried over rather than fetched again.
+    """
+    home = folder / _folder_name(name)
+    legacy = folder / (re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(". ")[:80] or "Game")
+    if legacy != home and legacy.is_dir() and not home.exists():
+        try:
+            legacy.rename(home)
+        except OSError:
+            return legacy                   # still in use: keep using it as it is
+    return home
 
 
 def _fetch_release(job: StoreJob, game: dict, settings: dict, folder: Path):
@@ -1236,7 +1253,7 @@ def _fetch_release(job: StoreJob, game: dict, settings: dict, folder: Path):
                          "direct downloads only." if swarm else
                          "This release has no torrent, and the store is set to BitTorrent only.")
 
-    home = folder / _folder_name(game["name"])
+    home = _game_home(folder, game["name"])
     download_size = int(game.get("download_size") or 0)
     problems = []
     for number, way in enumerate(order):
@@ -1283,6 +1300,10 @@ def _release_by_torrent(job: StoreJob, game: dict, swarm: list, home: Path, sett
             problems.append(str(exc))
             continue
         path = got.path
+        if getattr(got.client, "leech_only", False):
+            # Finished and never shared: let the built-in downloader close
+            # the files now, before the setup program tries to open them.
+            _forget_torrent(got.client, got.info_hash)
         if path.is_dir() and installers.find_installer(path) is None and _archive_sets(
                 [p for p in path.iterdir() if p.is_file()]):
             # Packed inside the torrent too. Unpacked beside it; the
@@ -1397,7 +1418,7 @@ def _download_release(job: StoreJob, game: dict, mirrors: list, folder: Path,
     others, so one host being down or slow costs one file's worth of
     retrying rather than the whole release.
     """
-    target = folder / _folder_name(game["name"])
+    target = _game_home(folder, game["name"])
     target.mkdir(parents=True, exist_ok=True)
     if (target / UNPACKED / UNPACKED_MARK).is_file():
         return target                        # unpacked on an earlier attempt

@@ -625,6 +625,19 @@ with each (Windows):
   so the game starts without a Windows prompt. Other compatibility
   settings on it are kept.
 
+**Paths the installer can read.** Many repacks unpack with an old library
+(ISDone.dll with unarc.dll) that cannot open a file whose path has
+anything outside plain English letters; a "–" from the title is enough
+for *Unarc.dll returned an error code: -6 … can't open fg-01.bin* (the
+`.bin` files are the game's packed data). So the store names download and
+install folders in plain ASCII, short (*Aqueduct 117 Civitas Nova - Gold
+Edition*), carries a download made under the old naming over instead of
+fetching it again, and starts the setup program through Windows' short
+8.3 path when something above it, such as a user name with an accent, is
+not plain. It also lets the built-in downloader close a finished torrent
+before the installer starts, and waits until every data file can be
+opened (a virus scanner can hold a fresh file for a moment).
+
 Repack installers run as administrator, and Windows only lets a program
 with the same rights stop their windows. Turn on *Run the store as
 administrator*: one prompt when the store opens, instead of one per game,

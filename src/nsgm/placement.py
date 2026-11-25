@@ -61,6 +61,30 @@ def safe_folder_name(title: str) -> str:
     return name[:120]
 
 
+# Typography that game titles are full of, spelled the plain way.
+_PLAIN = str.maketrans({"–": "-", "—": "-", "‐": "-", "‑": "-", "’": "'", "‘": "'",
+                        "“": "", "”": "", "„": "", "…": "...", "×": "x", "®": "", "™": "",
+                        "©": "", "º": "", "°": "", "&": "and", "+": " plus "})
+
+
+def plain_folder_name(title: str, limit: int = 60) -> str:
+    """A folder name of plain letters, digits and a little punctuation, kept short.
+
+    Many repack installers unpack with an old library (unarc.dll, driven
+    by ISDone.dll) that cannot open a file whose path has anything outside
+    plain ASCII - a "–" from a game's title is enough for
+    "Unarc.dll returned an error code: -6 ... can't open fg-01.bin" - and
+    long paths trouble it too.
+    """
+    import unicodedata
+    text = str(title or "").translate(_PLAIN)
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[^A-Za-z0-9 ._'()!,-]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" .-'")
+    text = text[:limit].rstrip(" .-'")
+    return safe_folder_name(text or "Game")
+
+
 def describe_all(folders: list) -> list[dict]:
     out = []
     for index, folder in enumerate(folders or []):

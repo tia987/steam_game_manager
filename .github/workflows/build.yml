@@ -202,6 +202,21 @@ jobs:
           print('controller bridge and finish-page check fine')
           "
 
+      # The installer's last page: a real Inno Setup installer with ticked
+      # "visit the website" and "launch the game" boxes, driven to its
+      # Finished page; the store's code must untick both and press Finish.
+      - name: Check unticking an installer's last page
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        working-directory: ${{ steps.locate.outputs.root }}
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y | Out-Null }
+          & $iscc /Q tests\windows\finish-page.iss
+          if ($LASTEXITCODE -ne 0) { Write-Error "could not build the test installer"; exit 1 }
+          python tests\windows\finish_page_check.py tests\windows\out\finish-page-test.exe "$env:RUNNER_TEMP\finish-test"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       # The store's behaviour is covered by offline tests with local fake
       # sites, hosts and torrent clients. Linux only: they keep their
       # settings in a temporary folder through XDG_CONFIG_HOME.

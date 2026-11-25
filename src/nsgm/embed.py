@@ -262,38 +262,193 @@ def _caption(hwnd) -> str:
     return _text(hwnd).replace("&", "").strip().rstrip(".").lower()
 
 
-def finished_page(pids: set) -> bool:
-    """Whether an installer of these processes is showing its last page.
+BUTTON_CLASSES = ("TNewButton", "TButton", "TBitBtn", "Button")
+CHECKBOX_CLASSES = ("TNewCheckBox", "TCheckBox", "Button")
+CHECKLIST_CLASSES = ("TNewCheckListBox", "TCheckListBox")
+BM_GETCHECK, BM_CLICK = 0x00F0, 0x00F5
+BS_TYPEMASK = 0x0F
+CHECKBOX_STYLES = (2, 3, 5, 6)          # BS_CHECKBOX, BS_AUTOCHECKBOX, BS_3STATE, BS_AUTO3STATE
+LB_GETCOUNT, LB_SETCURSEL = 0x018B, 0x0186
+WM_KEYDOWN, WM_KEYUP, VK_SPACE = 0x0100, 0x0101, 0x20
 
-    Inno Setup's wizard (class TWizardForm) and NSIS' dialog both end on a
-    page whose main button says Finish; the installation is complete by
-    then, and the ticked boxes on it - launch the game, visit a website,
-    read me - only run once that button is pressed.
-    """
-    if not IS_WINDOWS or not pids:
-        return False
+
+def _installer_windows(pids: set) -> list[int]:
+    """Visible windows of these processes, whether floating or held in ours."""
     windows = [h for h in _top_level_windows() if _pid(h) in pids]
     host = find_host()
     if host:
-        # Held installer windows are children of the store's window now.
         windows += [h for h in _child_windows(host)
                     if _pid(h) in pids and int(_GetAncestor(h, GA_PARENT) or 0) == host]
-    for hwnd in windows:
-        if not _IsWindowVisible(hwnd):
+    return [h for h in windows if _IsWindowVisible(h)]
+
+
+def _finish_button(hwnd) -> int:
+    for kid in _child_windows(hwnd):
+        if (_IsWindowVisible(kid) and _IsWindowEnabled(kid)
+                and _class(kid) in BUTTON_CLASSES and _caption(kid) in FINISH_WORDS):
+            return kid
+    return 0
+
+
+def finished_page(pids: set) -> bool:
+    """Whether an installer of these processes is showing its last page.
+
+    Any installer window with a Finish button: Inno Setup, NSIS and the
+    reskinned wizards repacks use all end on one. The installation is
+    complete by then, and the ticked boxes on that page - launch the game,
+    visit a website, read me - only run once the button is pressed.
+    """
+    if not IS_WINDOWS or not pids:
+        return False
+    return any(_finish_button(h) for h in _installer_windows(pids))
+
+
+def _send(hwnd, msg: int, wparam: int = 0, lparam: int = 0) -> int:
+    result = _ULONG_PTR(0)
+    if not _SendMessageTimeoutW(hwnd, msg, wparam, lparam, SMTO_ABORTIFHUNG, 1000,
+                                ctypes.byref(result)):
+        return -1
+    return int(result.value)
+
+
+def _untick_checkboxes(hwnd) -> list[str]:
+    unticked = []
+    for kid in _child_windows(hwnd):
+        if not (_IsWindowVisible(kid) and _IsWindowEnabled(kid)):
             continue
-        kind = _class(hwnd)
-        kids = _child_windows(hwnd)
-        inno = kind == "TWizardForm"
-        nsis = kind == "#32770" and any(_text(k).startswith("Nullsoft Install System")
-                                        for k in kids)
-        if not (inno or nsis):
+        if _class(kid) not in CHECKBOX_CLASSES:
             continue
-        for kid in kids:
-            if (_IsWindowVisible(kid) and _IsWindowEnabled(kid)
-                    and _class(kid) in ("TNewButton", "TButton", "Button")
-                    and _caption(kid) in FINISH_WORDS):
-                return True
-    return False
+        if (_GetLong(kid, GWL_STYLE) & BS_TYPEMASK) not in CHECKBOX_STYLES:
+            continue
+        if _send(kid, BM_GETCHECK) != 1:
+            continue
+        _send(kid, BM_CLICK)              # a click, so the program notices
+        if _send(kid, BM_GETCHECK) == 0:
+            unticked.append(_caption(kid) or "a box")
+    return unticked
+
+
+def _untick_checklists(hwnd) -> list[str]:
+    """Untick the items of Inno Setup's checkbox list (the "Run" list on its last page).
+
+    That list draws its own boxes, so their state is read through Windows'
+    accessibility interface, which Inno Setup provides for screen readers,
+    and each ticked item is selected and toggled with Space, as by hand.
+    """
+    unticked = []
+    for kid in _child_windows(hwnd):
+        if not (_IsWindowVisible(kid) and _IsWindowEnabled(kid)):
+            continue
+        if _class(kid) not in CHECKLIST_CLASSES:
+            continue
+        items = _accessible_items(kid)
+        for index, (name, checked) in enumerate(items):
+            if not checked:
+                continue
+            _send(kid, LB_SETCURSEL, index)
+            _send(kid, WM_KEYDOWN, VK_SPACE, 0x00390001)
+            _send(kid, WM_KEYUP, VK_SPACE, 0xC0390001)
+            after = _accessible_items(kid)
+            if index < len(after) and not after[index][1]:
+                unticked.append(name or f"item {index + 1}")
+    return unticked
+
+
+def finish_unticked(pids: set) -> dict:
+    """On an installer's last page: untick every box, then press Finish.
+
+    Returns ``{"found", "unticked": [names], "pressed"}``.
+    """
+    out = {"found": False, "unticked": [], "pressed": False}
+    if not IS_WINDOWS or not pids:
+        return out
+    for hwnd in _installer_windows(pids):
+        button = _finish_button(hwnd)
+        if not button:
+            continue
+        out["found"] = True
+        try:
+            out["unticked"] += _untick_checkboxes(hwnd)
+        except Exception:
+            pass
+        try:
+            out["unticked"] += _untick_checklists(hwnd)
+        except Exception:
+            pass
+        out["pressed"] = _send(button, BM_CLICK) != -1
+        break
+    return out
+
+
+# --------------------------------------------------------------------------
+# reading a checkbox list through Windows' accessibility interface (MSAA)
+# --------------------------------------------------------------------------
+
+if IS_WINDOWS:
+    class _VARIANT(ctypes.Structure):
+        _fields_ = [("vt", ctypes.c_ushort), ("r1", ctypes.c_ushort), ("r2", ctypes.c_ushort),
+                    ("r3", ctypes.c_ushort), ("lVal", ctypes.c_long),
+                    ("rest", ctypes.c_byte * (12 if ctypes.sizeof(ctypes.c_void_p) == 8 else 4))]
+
+    class _IID(ctypes.Structure):
+        _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                    ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+    _IID_IAccessible = _IID(0x618736E0, 0x3C3D, 0x11CF,
+                            (ctypes.c_ubyte * 8)(0x81, 0x0C, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71))
+    try:
+        _oleacc = ctypes.WinDLL("oleacc")
+        _oleacc.AccessibleObjectFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD,
+                                                       ctypes.POINTER(_IID),
+                                                       ctypes.POINTER(ctypes.c_void_p)]
+        _oleacc.AccessibleObjectFromWindow.restype = ctypes.c_long
+        _oleaut32 = ctypes.WinDLL("oleaut32")
+        _oleaut32.SysFreeString.argtypes = [ctypes.c_void_p]
+        _oleaut32.SysFreeString.restype = None
+    except OSError:
+        _oleacc = None
+
+OBJID_CLIENT = 0xFFFFFFFC
+VT_I4 = 3
+STATE_SYSTEM_CHECKED = 0x10
+
+
+def _com(pointer, index: int, *args, argtypes=()):
+    table = ctypes.cast(pointer, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    function = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, *argtypes)(table[index])
+    return function(pointer, *args)
+
+
+def _accessible_items(hwnd) -> list[tuple[str, bool]]:
+    """(name, ticked) for every item of a list, from its accessibility interface."""
+    if not IS_WINDOWS or _oleacc is None:
+        return []
+    accessible = ctypes.c_void_p()
+    if _oleacc.AccessibleObjectFromWindow(hwnd, OBJID_CLIENT, ctypes.byref(_IID_IAccessible),
+                                          ctypes.byref(accessible)) != 0 or not accessible.value:
+        return []
+    items = []
+    try:
+        count = ctypes.c_long(0)
+        _com(accessible, 8, ctypes.byref(count), argtypes=(ctypes.POINTER(ctypes.c_long),))
+        for child in range(1, count.value + 1):
+            which = _VARIANT(vt=VT_I4, lVal=child)
+            state = _VARIANT()
+            # IAccessible::get_accState(VARIANT child, VARIANT* state)
+            _com(accessible, 14, which, ctypes.byref(state),
+                 argtypes=(_VARIANT, ctypes.POINTER(_VARIANT)))
+            name = ctypes.c_void_p()
+            # IAccessible::get_accName(VARIANT child, BSTR* name)
+            _com(accessible, 10, which, ctypes.byref(name),
+                 argtypes=(_VARIANT, ctypes.POINTER(ctypes.c_void_p)))
+            text = ctypes.wstring_at(name.value) if name.value else ""
+            if name.value:
+                _oleaut32.SysFreeString(name)
+            ticked = state.vt == VT_I4 and bool(state.lVal & STATE_SYSTEM_CHECKED)
+            items.append((text.replace("&", "").strip(), ticked))
+    finally:
+        _com(accessible, 2)                 # IUnknown::Release
+    return items
 
 
 def find_host() -> int:

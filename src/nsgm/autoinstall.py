@@ -73,11 +73,17 @@ REDISTS = re.compile(
     r"ue[345]?prereqsetup\w*|ueprereq\w*|uplay\w*setup\w*|vulkanrt\w*)[\w.-]*\.exe$")
 
 
+# A browser the installer itself starts is only ever there to show a website.
+BROWSERS = re.compile(r"(?i)^(msedge|chrome|firefox|brave|opera|opera_gx|vivaldi|iexplore)\.exe$")
+
+
 def side_program(name: str) -> str:
-    """"checker", "redist" or "" for a program an installer started."""
+    """"checker", "redist", "browser" or "" for a program an installer started."""
     base = os.path.basename(name or "")
     if CHECKERS.match(base):
         return "checker"
+    if BROWSERS.match(base):
+        return "browser"
     if REDISTS.match(base):
         return "redist"
     return ""
@@ -750,23 +756,29 @@ class Queue:
             handled: set = set()
             closed_at_finish = False
             finish_seen = 0.0
+            finish_pressed_at = 0.0
             try:
                 while tree.alive():
                     self._stop_side_programs(task, tree, handled)
-                    if task.skip_finish and embed.finished_page(tree.pids()):
+                    if task.skip_finish and not closed_at_finish \
+                            and embed.finished_page(tree.pids()):
                         # Seen twice in a row a moment apart, so a page that
                         # only flashes past is left alone.
                         if finish_seen and time.time() - finish_seen > 1.0:
-                            stopped, _why = tree.terminate()
-                            if stopped:
+                            done = embed.finish_unticked(tree.pids())
+                            if done["found"]:
                                 closed_at_finish = True
-                                self._note(task, "Closed the installer on its last page, so "
-                                                 "nothing ticked there runs (launching the "
-                                                 "game, opening a website).")
-                                break
+                                finish_pressed_at = time.time()
+                                names = ", ".join(done["unticked"]) or "nothing was ticked"
+                                self._note(task, f"Last page: unticked {names}, then Finish.")
                         finish_seen = finish_seen or time.time()
                     else:
                         finish_seen = 0.0
+                    if closed_at_finish and tree.alive() and \
+                            time.time() - finish_pressed_at > 10:
+                        # Finish was pressed but it lingers: it is done anyway.
+                        tree.terminate()
+                        break
                     if task.cancel:
                         stopped, why = tree.terminate()
                         if not stopped:
@@ -869,17 +881,18 @@ class Queue:
 
     def _stop_side_programs(self, task: Task, tree, handled: set) -> None:
         """Stop the extras an installer starts, when this install should skip them."""
-        if not (task.skip_redists or task.skip_checkers):
+        if not (task.skip_redists or task.skip_checkers or task.skip_finish):
             return
         for pid in tree.pids():
             if pid in handled or pid == tree.root:
                 continue
             kind = side_program(tree.names.get(pid, ""))
             if not kind or (kind == "redist" and not task.skip_redists) \
-                    or (kind == "checker" and not task.skip_checkers):
+                    or (kind == "checker" and not task.skip_checkers) \
+                    or (kind == "browser" and not task.skip_finish):
                 continue
             handled.add(pid)
-            what = "file check" if kind == "checker" else "extra setup"
+            what = {"checker": "file check", "browser": "website"}.get(kind, "extra setup")
             name = tree.names.get(pid, "")
             if tree.stop_branch(pid):
                 self._note(task, f"Skipped the {what} {name}.")

@@ -235,6 +235,20 @@ jobs:
           python tests\windows\finish_page_check.py tests\windows\out\finish-page-test.exe "$env:RUNNER_TEMP\finish-test"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # A silent install, as the store does it: Inno Setup still runs the
+      # installer's redistributable and its post-install website entry. The
+      # store's watcher must stop both before they do anything.
+      - name: Check a silent install's extras are stopped
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        working-directory: ${{ steps.locate.outputs.root }}
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          & $iscc /Q tests\windows\quiet-extras.iss
+          if ($LASTEXITCODE -ne 0) { Write-Error "could not build the test installer"; exit 1 }
+          python tests\windows\quiet_extras_check.py tests\windows\out\quiet-extras-test.exe "$env:RUNNER_TEMP\quiet-test"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       # The store's behaviour is covered by offline tests with local fake
       # sites, hosts and torrent clients. Linux only: they keep their
       # settings in a temporary folder through XDG_CONFIG_HOME.

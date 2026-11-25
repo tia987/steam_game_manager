@@ -77,7 +77,14 @@ REDISTS = re.compile(
 BROWSERS = re.compile(r"(?i)^(msedge|chrome|firefox|brave|opera|opera_gx|vivaldi|iexplore)\.exe$")
 
 
-def side_program(name: str) -> str:
+# Anything an installer starts with a web address in its command line is
+# there to open a website, however it goes about it: a browser, "cmd /c
+# start https://...", "rundll32 url.dll,FileProtocolHandler https://...",
+# "explorer https://...". Repacks open theirs (bit.ly/...) that way.
+WEB_ADDRESS = re.compile(r"(?i)\b(https?://|www\.|bit\.ly/)")
+
+
+def side_program(name: str, command: str = "") -> str:
     """"checker", "redist", "browser" or "" for a program an installer started."""
     base = os.path.basename(name or "")
     if CHECKERS.match(base):
@@ -86,7 +93,165 @@ def side_program(name: str) -> str:
         return "browser"
     if REDISTS.match(base):
         return "redist"
+    if command and WEB_ADDRESS.search(command):
+        return "browser"
     return ""
+
+
+# Options on an installer's own pages that a store install never wants, by
+# what they are for. A box is only unticked when its kind is being skipped.
+UNWANTED_OPTIONS = {
+    "redist": re.compile(r"(?i)direct ?x|visual c|vc\+\+|vc_?redist|redistributable|"
+                         r"\.net\b|physx|\bxna\b|openal|prerequisite|\bruntimes?\b"),
+    "finish": re.compile(r"(?i)\bweb ?site|\bhome ?page|\bvisit\b|\bread ?me\b|changelog|"
+                         r"release notes|\blaunch\b|start the game|run the game|\bplay\b|"
+                         r"discord|telegram|donat"),
+    "checker": re.compile(r"(?i)\bverify|integrity|check(ing)? (the )?(installed )?files|"
+                          r"\bmd5\b|\bsfv\b|\bcrc\b|\bhash"),
+    "desktop": re.compile(r"(?i)desktop|quick ?launch"),
+}
+
+
+def unwanted_option(label: str, task: "Task", no_desktop: bool = True) -> str:
+    """Why an option on an installer page should be unticked for this task, or ""."""
+    wanted = {"redist": task.skip_redists, "finish": task.skip_finish,
+              "checker": task.skip_checkers, "desktop": no_desktop}
+    for kind, pattern in UNWANTED_OPTIONS.items():
+        if wanted[kind] and pattern.search(label or ""):
+            return kind
+    return ""
+
+
+INSTALLS_LOG_KEEP = 4000          # lines
+
+
+def _record_install(task: "Task") -> None:
+    """Add a finished install's log to installs.log in the config folder.
+
+    What the installer showed, ran and was stopped from running, kept for
+    when something went wrong and the store's screen is long gone.
+    """
+    if task.status not in FINISHED and task.status != "waiting":
+        return
+    try:
+        path = library.config_dir() / "installs.log"
+        lines = path.read_text("utf-8").splitlines() if path.exists() else []
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        lines += ["", f"=== {stamp}  {task.name or Path(task.path).name}  ({task.status}, "
+                      f"{task.mode or 'unknown'} mode)"]
+        lines += [f"  {line}" for line in task.log]
+        if task.warning:
+            lines.append(f"  Warning: {task.warning}")
+        path.write_text("\n".join(lines[-INSTALLS_LOG_KEEP:]) + "\n", "utf-8")
+    except OSError:
+        pass
+
+
+def run_entries(log_text: str) -> list[str]:
+    """What an Inno Setup installer ran after installing, from its own log.
+
+    Each [Run] entry it processed is logged as a "-- Run entry --" block
+    with its Filename and Parameters lines.
+    """
+    entries, current = [], None
+    for raw in log_text.splitlines():
+        line = raw.split(" ", 2)[-1] if raw[:4].isdigit() else raw
+        line = line.strip()
+        if line == "-- Run entry --":
+            if current:
+                entries.append(current)
+            current = {"file": "", "params": ""}
+        elif current is not None and line.startswith("Filename:"):
+            current["file"] = line[9:].strip()
+        elif current is not None and line.startswith("Parameters:"):
+            current["params"] = line[11:].strip()
+    if current:
+        entries.append(current)
+    return [f"{e['file']} {e['params']}".strip() for e in entries if e["file"]]
+
+
+class PageOptions:
+    """Unticks what a store install never wants on the installer's own pages.
+
+    Redistributables, a file check, a website or readme, launching the game,
+    a desktop shortcut: each only when this install skips that kind. Every
+    box is touched once, so one ticked again by hand stays ticked. What each
+    page offered goes in the install's log.
+    """
+
+    EVERY = 0.7
+
+    def __init__(self, queue: "Queue", task: "Task"):
+        self.queue = queue
+        self.task = task
+        self.done: set = set()
+        self.pages: set = set()
+        self.checked_at = 0.0
+        self.no_desktop = _setting("no_desktop_shortcuts")
+
+    def check(self, tree) -> None:
+        if not embed.IS_WINDOWS or time.time() - self.checked_at < self.EVERY:
+            return
+        self.checked_at = time.time()
+        try:
+            options = embed.page_options(tree.pids())
+        except Exception:
+            return
+        if not options:
+            return
+        page = frozenset(o["label"] for o in options)
+        if page not in self.pages:
+            self.pages.add(page)
+            self.queue._note(self.task, "Options on screen: " + ", ".join(
+                f"[{'x' if o['checked'] else ' '}] {o['label'] or '(no name)'}" for o in options))
+        for option in options:
+            key = (option["hwnd"], option["index"], option["label"])
+            if key in self.done or not option["checked"]:
+                continue
+            why = unwanted_option(option["label"], self.task, self.no_desktop)
+            if not why:
+                continue
+            self.done.add(key)
+            took = embed.untick_option(option)
+            self.queue._note(self.task, f"Unticked “{option['label']}”" if took else
+                             f"Could not untick “{option['label']}” (the installer runs as "
+                             "administrator and this app does not).")
+
+
+class SideGuard:
+    """Stops an installer's extras the moment they start, before a window shows.
+
+    Looked at about forty times a second for the whole install: a
+    redistributable's setup, a file checker or a browser stopped within a
+    few hundredths of a second never gets to draw anything, and a browser
+    is stopped before it can hand its address to one already open.
+    """
+
+    EVERY = 0.025
+
+    def __init__(self, queue: "Queue", task: "Task", tree):
+        self.queue = queue
+        self.task = task
+        self.tree = tree
+        self.handled: set = set()
+        self.stopping = threading.Event()
+
+    def start(self) -> "SideGuard":
+        if self.task.skip_redists or self.task.skip_checkers or self.task.skip_finish:
+            threading.Thread(target=self._run, name="nsgm-side-guard", daemon=True).start()
+        return self
+
+    def stop(self) -> None:
+        self.stopping.set()
+
+    def _run(self) -> None:
+        while not self.stopping.is_set():
+            try:
+                self.tree.refresh()
+                self.queue._stop_side_programs(self.task, self.tree, self.handled)
+            except Exception:
+                pass
+            self.stopping.wait(self.EVERY)
 
 
 def _setting(name: str, default: bool = True) -> bool:
@@ -479,6 +644,7 @@ class Queue:
             finally:
                 self.current = None
                 self.save()
+                _record_install(task)
 
     def _check(self, task: Task) -> None:
         if task.cancel:
@@ -753,15 +919,16 @@ class Queue:
             muter = winaudio.mute_while(tree, spare=str(target) if target else "",
                                         enabled=_mute_installers())
             last_size = 0.0
-            handled: set = set()
             closed_at_finish = False
             finish_seen = 0.0
             finish_pressed_at = 0.0
             untick_tried = False
             temp_before = winclean.inno_temp_dirs()
+            guard = SideGuard(self, task, tree).start()
+            options = PageOptions(self, task)
             try:
                 while tree.alive():
-                    self._stop_side_programs(task, tree, handled)
+                    options.check(tree)
                     if task.skip_finish and not closed_at_finish \
                             and embed.finished_page(tree.pids()):
                         # Seen twice in a row a moment apart, so a page that
@@ -794,6 +961,7 @@ class Queue:
                             task.message = f"Installing {current}"
                     time.sleep(0.5)
             finally:
+                guard.stop()
                 if muter is not None:
                     muter.stop()
                 embed.MANAGER.finish(session)
@@ -817,6 +985,13 @@ class Queue:
             for program in winclean.clear_run_as_admin(str(target)):
                 self._note(task, f"{Path(program).name} no longer asks for administrator rights.")
 
+        if log:
+            try:
+                ran = run_entries(Path(log).read_text("utf-8", "replace"))
+            except OSError:
+                ran = []
+            for entry in ran[:15]:
+                self._note(task, f"The installer ran: {entry}")
         if closed_at_finish:
             code = 0                 # it had finished; only its last page was skipped
         ok, said = installers.interpret(task.framework, code)
@@ -927,14 +1102,29 @@ class Queue:
         for pid in tree.pids():
             if pid in handled or pid == tree.root:
                 continue
-            kind = side_program(tree.names.get(pid, ""))
+            name = tree.names.get(pid, "")
+            # What a program is never changes, so each is looked at once. Its
+            # command line is read only when its name says nothing, and only
+            # to find a web address; a program that has not got that far
+            # yet (no command line readable) is looked at again next time.
+            command = ""
+            if task.skip_finish and not side_program(name):
+                command = winproc.command_line(pid)
+                if not command and winproc.IS_WINDOWS:
+                    tries = tree.__dict__.setdefault("_command_tries", {})
+                    tries[pid] = tries.get(pid, 0) + 1
+                    if tries[pid] < 8:
+                        continue
+            handled.add(pid)
+            kind = side_program(name, command)
             if not kind or (kind == "redist" and not task.skip_redists) \
                     or (kind == "checker" and not task.skip_checkers) \
                     or (kind == "browser" and not task.skip_finish):
                 continue
-            handled.add(pid)
             what = {"checker": "file check", "browser": "website"}.get(kind, "extra setup")
-            name = tree.names.get(pid, "")
+            address = WEB_ADDRESS.search(command or "")
+            if address:
+                name = f"{name} ({command[address.start():][:80].split()[0]})"
             if tree.stop_branch(pid):
                 self._note(task, f"Skipped the {what} {name}.")
             else:

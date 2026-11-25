@@ -368,6 +368,47 @@ def _untick_checklists(hwnd) -> list[str]:
     return unticked
 
 
+def page_options(pids: set) -> list[dict]:
+    """Every tick box an installer's windows show right now.
+
+    ``{"label", "checked", "hwnd", "index"}``: ordinary check boxes have
+    index -1; items of Inno Setup's check list (its Select Tasks and
+    Select Components pages, and the Run list on its last page) are read
+    through the accessibility interface and carry their position.
+    """
+    out: list[dict] = []
+    if not IS_WINDOWS or not pids:
+        return out
+    for hwnd in _installer_windows(pids):
+        for kid in _child_windows(hwnd):
+            if not (_IsWindowVisible(kid) and _IsWindowEnabled(kid)):
+                continue
+            kind = _class(kid)
+            if kind in CHECKLIST_CLASSES:
+                for index, (name, checked) in enumerate(_accessible_items(kid)):
+                    out.append({"label": name, "checked": checked, "hwnd": kid, "index": index})
+            elif kind in CHECKBOX_CLASSES and \
+                    (_GetLong(kid, GWL_STYLE) & BS_TYPEMASK) in CHECKBOX_STYLES:
+                out.append({"label": _text(kid).replace("&", "").strip(),
+                            "checked": _send(kid, BM_GETCHECK) == 1, "hwnd": kid, "index": -1})
+    return out
+
+
+def untick_option(option: dict) -> bool:
+    """Untick one box from ``page_options``, as a click or Space would. True if it took."""
+    if not IS_WINDOWS:
+        return False
+    kid, index = option["hwnd"], option["index"]
+    if index < 0:
+        _send(kid, BM_CLICK)
+        return _send(kid, BM_GETCHECK) == 0
+    _send(kid, LB_SETCURSEL, index)
+    _send(kid, WM_KEYDOWN, VK_SPACE, 0x00390001)
+    _send(kid, WM_KEYUP, VK_SPACE, 0xC0390001)
+    after = _accessible_items(kid)
+    return index < len(after) and not after[index][1]
+
+
 def finish_unticked(pids: set) -> dict:
     """On an installer's last page: untick every box, then press Finish.
 

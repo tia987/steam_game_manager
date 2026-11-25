@@ -409,6 +409,43 @@ class ProcessTree:
 # restarting with administrator rights
 # --------------------------------------------------------------------------
 
+def command_line(pid: int) -> str:
+    """The command line a running program was started with, or "" if it cannot be read.
+
+    Through NtQueryInformationProcess's ProcessCommandLineInformation
+    (Windows 8.1 and later), which needs only the limited query right, so
+    it also works for a program running as administrator.
+    """
+    if not IS_WINDOWS or not pid:
+        return ""
+    try:
+        ntdll = ctypes.WinDLL("ntdll")
+    except OSError:
+        return ""
+    query = ntdll.NtQueryInformationProcess
+    query.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.ULONG,
+                      ctypes.POINTER(wintypes.ULONG)]
+    query.restype = ctypes.c_long
+    handle = _kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return ""
+    try:
+        size = wintypes.ULONG(0)
+        query(handle, 60, None, 0, ctypes.byref(size))
+        if not size.value or size.value > 1 << 20:
+            return ""
+        buffer = ctypes.create_string_buffer(size.value)
+        if query(handle, 60, buffer, size.value, ctypes.byref(size)) != 0:
+            return ""
+        length = ctypes.c_ushort.from_buffer(buffer, 0).value
+        start = ctypes.c_void_p.from_buffer(buffer, ctypes.sizeof(ctypes.c_void_p)).value
+        return ctypes.wstring_at(start, length // 2) if start and length else ""
+    except (OSError, ValueError):
+        return ""
+    finally:
+        _kernel32.CloseHandle(handle)
+
+
 def short_path(path: str) -> str:
     """The 8.3 form of an existing path (C:\\GAMES~1\\...), or the path as it is.
 

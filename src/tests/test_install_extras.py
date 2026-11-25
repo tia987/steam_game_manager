@@ -283,3 +283,101 @@ class InnoTempTests(unittest.TestCase):
             (temp / "is-NEW.tmp" / "ISDone.dll").write_bytes(b"x")
             self.assertEqual(winclean.remove_new_inno_temp(before, settle=0), ["is-NEW.tmp"])
         self.assertEqual(sorted(p.name for p in temp.iterdir()), ["is-OLD.tmp", "keep-me"])
+
+
+class WebsiteAndOptionTests(unittest.TestCase):
+    def test_anything_opening_a_web_address_is_a_website(self):
+        side = autoinstall.side_program
+        self.assertEqual(side("cmd.exe", 'cmd.exe /c start "" https://bit.ly/fitgirl-repacks-site'),
+                         "browser")
+        self.assertEqual(side("rundll32.exe",
+                              "rundll32.exe url.dll,FileProtocolHandler http://example.com"), "browser")
+        self.assertEqual(side("explorer.exe", "explorer.exe www.example.com"), "browser")
+        self.assertEqual(side("unarc.exe", r"unarc.exe x -o+ D:\Games\fg-01.bin"), "")
+        self.assertEqual(side("setup.tmp", '"C:\\Temp\\is-1.tmp\\setup.tmp" /SL5="$1,2,3"'), "")
+
+    def task(self, **flags):
+        task = autoinstall.Task(id="t", path="setup.exe")
+        for key, value in flags.items():
+            setattr(task, key, value)
+        return task
+
+    def test_options_that_are_unticked(self):
+        all_off = self.task(skip_redists=True, skip_finish=True, skip_checkers=True)
+        why = lambda label, task=all_off, desk=True: autoinstall.unwanted_option(label, task, desk)
+        self.assertEqual(why("Install DirectX"), "redist")
+        self.assertEqual(why("Install Microsoft Visual C++ Redistributable"), "redist")
+        self.assertEqual(why("Visit FitGirl's website"), "finish")
+        self.assertEqual(why("Launch the game"), "finish")
+        self.assertEqual(why("Verify installed files (QuickSFV)"), "checker")
+        self.assertEqual(why("Create a desktop shortcut"), "desktop")
+        self.assertEqual(why("Create a desktop shortcut", desk=False), "")
+        for keep in ("English", "Limit installer to 2 GB of RAM", "Install bonus soundtrack",
+                     "Display settings", "Russian voice-over"):
+            self.assertEqual(why(keep), "", keep)
+        extras_on = self.task(skip_redists=False, skip_finish=True, skip_checkers=True)
+        self.assertEqual(autoinstall.unwanted_option("Install DirectX", extras_on), "")
+
+    def test_run_entries_from_an_inno_log(self):
+        log = "\n".join([
+            "2026-11-25 22:10:01.100   Installation process succeeded.",
+            "2026-11-25 22:10:01.200   -- Run entry --",
+            "2026-11-25 22:10:01.201   Run as: Current user",
+            "2026-11-25 22:10:01.202   Type: Exec",
+            "2026-11-25 22:10:01.203   Filename: C:\\Temp\\_Redist\\vc_redist.x64.exe",
+            "2026-11-25 22:10:01.204   Parameters: /quiet /norestart",
+            "2026-11-25 22:10:02.000   -- Run entry --",
+            "2026-11-25 22:10:02.001   Type: ShellExec",
+            "2026-11-25 22:10:02.002   Filename: https://bit.ly/fitgirl-repacks-site",
+        ])
+        self.assertEqual(autoinstall.run_entries(log), [
+            "C:\\Temp\\_Redist\\vc_redist.x64.exe /quiet /norestart",
+            "https://bit.ly/fitgirl-repacks-site"])
+
+    def test_each_program_is_looked_at_once(self):
+        class Tree:
+            root = 1
+            names = {1: "setup.exe", 2: "unarc.exe", 3: "cmd.exe", 4: "DXSETUP.exe"}
+
+            def __init__(self):
+                self.stopped = []
+
+            def pids(self):
+                return {1, 2, 3, 4}
+
+            def stop_branch(self, pid):
+                self.stopped.append(pid)
+                return True
+
+        lines = {2: "unarc.exe x fg-01.bin", 3: "cmd /c start https://bit.ly/x"}
+        reads = []
+
+        def command_line(pid):
+            reads.append(pid)
+            return lines.get(pid, "")
+
+        tree, handled = Tree(), set()
+        task = self.task(skip_redists=True, skip_finish=True, skip_checkers=True)
+        with mock.patch.object(autoinstall.winproc, "command_line", command_line):
+            for _ in range(5):
+                autoinstall.QUEUE._stop_side_programs(task, tree, handled)
+        self.assertEqual(sorted(tree.stopped), [3, 4])
+        self.assertEqual(sorted(reads), [2, 3])         # DXSETUP is known by name alone
+        self.assertTrue(any("bit.ly" in line for line in task.log), task.log)
+
+    def test_page_options_unticked_once_and_logged(self):
+        task = self.task(skip_redists=True, skip_finish=True, skip_checkers=True)
+        boxes = [{"label": "Install DirectX", "checked": True, "hwnd": 5, "index": 0},
+                 {"label": "English", "checked": True, "hwnd": 5, "index": 1}]
+        clicks = []
+        with mock.patch.object(autoinstall.embed, "IS_WINDOWS", True), \
+                mock.patch.object(autoinstall.embed, "page_options", return_value=boxes), \
+                mock.patch.object(autoinstall.embed, "untick_option",
+                                  side_effect=lambda o: clicks.append(o["label"]) or True):
+            options = autoinstall.PageOptions(autoinstall.QUEUE, task)
+            options.check(mock.Mock(pids=lambda: {1}))
+            options.checked_at = 0
+            options.check(mock.Mock(pids=lambda: {1}))      # still shown ticked: left alone now
+        self.assertEqual(clicks, ["Install DirectX"])
+        self.assertTrue(task.log[0].startswith("Options on screen: [x] Install DirectX, [x] English"))
+        self.assertEqual(sum(line.startswith("Options on screen") for line in task.log), 1)

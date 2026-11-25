@@ -119,7 +119,7 @@ jobs:
         shell: bash
         working-directory: ${{ steps.locate.outputs.root }}
         run: |
-          python -c "import nsgm, nsgm.server, nsgm.resolve, nsgm.steam, nsgm.autoinstall, nsgm.embed, nsgm.winproc, nsgm.drives, nsgm.installers, nsgm.placement, nsgm.storeinfo, nsgm.torrentclient, nsgm.tools, nsgm.store, nsgm.winaudio, nsgm.torrentengine, nsgm.sitesync, nsgm.hosters, nsgm.running, nsgm.streamwatch; print('imports fine')"
+          python -c "import nsgm, nsgm.server, nsgm.resolve, nsgm.steam, nsgm.autoinstall, nsgm.embed, nsgm.winproc, nsgm.drives, nsgm.installers, nsgm.placement, nsgm.storeinfo, nsgm.torrentclient, nsgm.tools, nsgm.store, nsgm.winaudio, nsgm.torrentengine, nsgm.sitesync, nsgm.hosters, nsgm.running, nsgm.streamwatch, nsgm.padbridge, nsgm.inputlog; print('imports fine')"
           python -c "
           from nsgm import vdf, steam
           entry = steam.build_shortcut('Test', '/tmp/game.exe')
@@ -198,6 +198,24 @@ jobs:
           assert dll is not None, 'no XInput'
           state = padbridge.XINPUT_STATE()
           print('XInput slot 0 answers', dll.XInputGetState(0, state))
+          import ctypes
+          assert ctypes.sizeof(padbridge.JOYINFOEX) == 52, ctypes.sizeof(padbridge.JOYINFOEX)
+          assert ctypes.sizeof(padbridge.JOYCAPSW) == 728, ctypes.sizeof(padbridge.JOYCAPSW)
+          winmm = padbridge._winmm()
+          assert winmm is not None, 'no WinMM'
+          sony = padbridge.SonyPads(winmm)
+          print('PlayStation pads through WinMM:', sony.read(), 'of', winmm.joyGetNumDevs(), 'slots')
+          sent = []
+          class Window:
+              def evaluate_js(self, script): sent.append(script)
+          bridge = padbridge.Bridge(Window(), in_front=lambda: True, streaming=True).start()
+          time.sleep(2)
+          bridge.stopping.set()
+          print('bridge status:', bridge.status)
+          assert bridge.status['readers'] == ['XInput', 'WinMM'], bridge.status
+          assert not bridge.status['error'], bridge.status
+          from nsgm import inputlog
+          print('input details:', inputlog.details())
           print('finished page among our windows:', embed.finished_page({os.getpid()}))
           print('controller bridge and finish-page check fine')
           "

@@ -150,16 +150,19 @@ def _closing() -> None:
 def _store_shown(window) -> None:
     """Once the store's window is up: put it in front, and read pads directly too.
 
-    It has to be the foreground window for the controller, phone keyboard
-    and touches to reach it; and when it runs as administrator the browser
-    engine can lose Xbox-type pads, so XInput is read alongside.
+    It has to be the foreground window for the phone keyboard and touches
+    to reach it; and when it runs as administrator the browser engine can
+    lose controllers, so the app reads them itself alongside (see padbridge).
     """
-    from . import padbridge
+    from . import inputlog, padbridge
     try:
-        padbridge.start(window)
+        padbridge.start(window, streaming=store.STREAMING)
     except Exception:
         pass
     embed.take_foreground()
+    if store.STREAMING:
+        embed.keep_in_front()
+    inputlog.start()
 
 
 if __name__ == "__main__":

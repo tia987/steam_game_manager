@@ -167,6 +167,45 @@ class PadBridgeTests(unittest.TestCase):
         self.assertTrue(both["buttons"][0] and both["buttons"][1])
         self.assertIsNone(padbridge.merge([]))
 
+    def test_playstation_pad_through_winmm(self):
+        from types import SimpleNamespace
+        from nsgm import padbridge
+        caps = SimpleNamespace(wXmin=0, wXmax=65535, wYmin=0, wYmax=65535, wZmin=0, wZmax=65535,
+                               wRmin=0, wRmax=65535)
+        # Cross and Options held, d-pad right, left stick fully left, sticks otherwise centred.
+        info = SimpleNamespace(dwButtons=(1 << 1) | (1 << 9), dwPOV=9000, dwXpos=0,
+                               dwYpos=32767, dwZpos=32767, dwRpos=65535)
+        state = padbridge.sony_snapshot(info, caps, pid=0x0CE6)
+        self.assertEqual(state["family"], "ps5")
+        self.assertTrue(state["buttons"][0])            # Cross is the confirm button (A)
+        self.assertFalse(state["buttons"][2])           # Square is not
+        self.assertTrue(state["buttons"][9])            # Options = menu
+        self.assertTrue(state["buttons"][15])           # d-pad right
+        self.assertFalse(any(state["buttons"][12:15]))
+        self.assertEqual(state["axes"], [-1.0, 0.0, 0.0, 1.0])
+        diagonal = padbridge.sony_snapshot(SimpleNamespace(
+            dwButtons=1 << 2, dwPOV=31500, dwXpos=32767, dwYpos=32767, dwZpos=32767,
+            dwRpos=32767), caps, pid=0x05C4)
+        self.assertEqual(diagonal["family"], "ps4")
+        self.assertTrue(diagonal["buttons"][1])         # Circle = back (B)
+        self.assertTrue(diagonal["buttons"][12] and diagonal["buttons"][14])   # up-left
+        centred = padbridge.sony_snapshot(SimpleNamespace(
+            dwButtons=0, dwPOV=0xFFFF, dwXpos=32767, dwYpos=32767, dwZpos=32767,
+            dwRpos=32767), caps)
+        self.assertFalse(any(centred["buttons"]))
+        self.assertEqual(padbridge.merge([padbridge.snapshot(SimpleNamespace(
+            wButtons=0, bLeftTrigger=0, bRightTrigger=0, sThumbLX=0, sThumbLY=0,
+            sThumbRX=0, sThumbRY=0)), state])["family"], "ps5")
+
+    def test_streamed_store_always_listens(self):
+        from nsgm import padbridge
+        pressed = {"buttons": [True] + [False] * 15, "axes": [0.0] * 4, "family": "ps4"}
+        desk = padbridge.Bridge(None, in_front=lambda: False)
+        self.assertFalse(any(desk.outgoing([pressed])["buttons"]))   # a game is in front
+        streamed = padbridge.Bridge(None, in_front=lambda: False, streaming=True)
+        self.assertTrue(streamed.outgoing([pressed])["buttons"][0])
+        self.assertFalse(streamed.status["in_front"])
+
     def test_finish_buttons_in_several_languages(self):
         from nsgm import embed
         for word in ("finish", "fertig stellen", "terminer", "fine", "valmis"):

@@ -2689,7 +2689,16 @@ def status() -> dict:
         "steam_running": _steam_running(),
         "sync": site_progress(),
         "stream_watch": _stream_watch(),
+        "input": _input_details(),
     }
+
+
+def _input_details() -> dict:
+    from . import inputlog
+    try:
+        return inputlog.details()
+    except Exception:
+        return {}
 
 
 def _stream_watch() -> dict:

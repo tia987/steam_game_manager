@@ -493,11 +493,22 @@ mouse.
   prompt. The store never asks for the rights itself while streaming,
   even with *Run the store as administrator* on, because the prompt would
   take over the stream and leave the store without input. Running as
-  administrator can also cut the browser engine off from Xbox-type pads
-  (it reads them through Windows.Gaming.Input), so the store also reads
-  XInput itself and uses that whenever the engine sees no controller -
-  only while the store is the window in front. Sunshine's emulated pad
-  is an Xbox 360 one unless Sunshine is set to emulate a DualShock. Then:
+  administrator can also cut the browser engine off from controllers (it
+  reads Xbox-type pads through Windows.Gaming.Input, which does not serve
+  elevated programs, and may keep listing a pad that never moves), so the
+  store reads them itself and always combines that with what the engine
+  reports: Xbox-type pads through XInput, and PlayStation pads through
+  Windows' joystick functions (WinMM). The second matters over Moonlight:
+  with a PlayStation controller in your hand, Sunshine's automatic setting
+  emulates a DualShock 4, which XInput cannot see. In a stream the store
+  always listens; on the desktop only while it is the window in front, so
+  a game started from it does not drive the store too. While streamed it
+  also puts itself back in front whenever only the desktop or taskbar is,
+  for the phone keyboard and touches. On a stream it says once, a few
+  seconds after opening, which controllers it reads itself; the same
+  details (administrator or not, window in front, pads seen, whether the
+  page receives them) go to `input.log` in the config folder whenever they
+  change, and to Settings → Controller. Then:
   - **Leave** closes the store completely, which ends that stream, so you
     can start your Steam app in Moonlight right after. Quitting the app
     from Moonlight's menu closes the store as well.

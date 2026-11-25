@@ -182,6 +182,8 @@ function applyStatus(status, quiet = false) {
   S.pendingRemove = status.pending_remove || [];
   S.busy = !!status.busy;
   S.streamWatch = status.stream_watch || {};
+  S.input = status.input || {};
+  noticeInput();
   S.steamRunning = !!status.steam_running;
   noticeSync(status.sync || {});
   if (S.data) paintStreamWatch();
@@ -826,6 +828,29 @@ function leaveSteamStep() {
     { label: "Leave", primary: true, run: quit },
     { label: "Stay in the store", run: () => {} },
   ]);
+}
+
+function inputText() {
+  const i = S.input || {};
+  if (!i.readers) return "";
+  const pads = [];
+  if (i.playstation_pads) pads.push(`${i.playstation_pads} PlayStation`);
+  if (i.xinput_pads) pads.push(`${i.xinput_pads} Xbox-type`);
+  return (pads.length ? `Read directly by the store: ${pads.join(" and ")} controller${
+    (i.playstation_pads || 0) + (i.xinput_pads || 0) === 1 ? "" : "s"}.` : "The store sees no controller of its own reading.")
+    + (i.admin ? " Running as administrator." : "")
+    + (i.streaming ? "" : i.in_front ? " The store is the window in front." : " Another window is in front.")
+    + (i.error ? ` Problem: ${i.error}` : "");
+}
+
+// Over Moonlight, say once what the store sees of the controller: if it
+// does nothing, this is the one thing that can be read without pressing
+// anything (input.log in the app's settings folder has the same).
+function noticeInput() {
+  if ($("inputState")) $("inputState").textContent = inputText();
+  if (S.inputNoticed || !(S.data && S.data.streaming) || !(S.input || {}).readers) return;
+  S.inputNoticed = true;
+  setTimeout(() => toast(inputText() || "Reading the controller."), 2500);
 }
 
 function paintStreamWatch() {
@@ -1779,10 +1804,12 @@ document.addEventListener("mousemove", (event) => {
 
 const PAD = { previous: {}, repeatAt: {}, connected: false, detected: "xbox", native: null };
 
-// Pads read directly through XInput by the app, used when the browser
-// engine reports none (it can lose them when the app runs as administrator).
+// Pads read directly by the app (XInput, and PlayStation pads through
+// Windows' joystick functions), combined with what the browser engine
+// reports: running as administrator the engine can lose them.
 window.nativePad = (state) => {
   PAD.native = state;
+  PAD.nativeSeen = true;
   const busy = state && (state.buttons.some(Boolean) || state.axes.some((v) => Math.abs(v) > 0.5));
   if (busy && !PAD.connected) {
     setInput("pad");
@@ -1808,10 +1835,18 @@ function padFamily(id) {
 function readPads() {
   const state = {};
   let active = null;
-  const pads = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
-  if (!pads.length && PAD.native) {
-    pads.push({ id: "XInput", axes: PAD.native.axes,
-                buttons: PAD.native.buttons.map((pressed) => ({ pressed })) });
+  let pads = [];
+  try {
+    pads = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
+  } catch (error) { /* no gamepad access at all: the app's own reading still counts */ }
+  if (PAD.native) {
+    // Always combined with the engine's pads, not only when it reports none:
+    // running as administrator the engine can list a pad that never moves.
+    // The same button seen twice is still one press.
+    const family = PAD.native.family || "xbox";
+    pads.push({ id: family === "ps5" ? "054c-0ce6 DualSense (read by the app)"
+                  : family === "ps4" ? "054c-05c4 DualShock 4 (read by the app)" : "XInput",
+                axes: PAD.native.axes, buttons: PAD.native.buttons.map((pressed) => ({ pressed })) });
   }
   for (const pad of pads) {
     const pressed = (index) => !!(pad.buttons[index] && pad.buttons[index].pressed);
@@ -1869,8 +1904,26 @@ function padLoop(now) {
     }
     PAD.previous = state;
   }
+  PAD.ranAt = performance.now();
   requestAnimationFrame(padLoop);
 }
+
+// Animation frames stop whenever the engine thinks the window is hidden or
+// covered, which a streamed, elevated window can be taken for. The
+// controller must keep working regardless.
+setInterval(() => {
+  if (PAD.ranAt && performance.now() - PAD.ranAt > 150) {
+    const { state, count } = readPads();
+    if (count) {
+      const now = performance.now();
+      for (const name of PAD_BUTTONS) {
+        if (state[name] && !PAD.previous[name]) act(name);
+      }
+      PAD.previous = state;
+      PAD.ranAt = now - 100;
+    }
+  }
+}, 50);
 
 window.addEventListener("gamepadconnected", (event) => {
   setInput("pad");

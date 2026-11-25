@@ -510,6 +510,36 @@ def take_foreground(tries: int = 20, pause: float = 0.25) -> bool:
     return False
 
 
+# Windows that mean "nothing in particular is in front": the desktop, the
+# taskbar, or no window at all, which is what a program started by a
+# service often leaves behind.
+NOBODY_IN_FRONT = ("Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "")
+
+
+def keep_in_front(every: float = 2.0, stop=None) -> None:
+    """While streamed: whenever nothing else is in front, put the store there.
+
+    The phone keyboard and touches over Moonlight go to the front window,
+    so the store must be it. It never takes over from a real window - an
+    installer's question, say - only from the desktop or the taskbar.
+    """
+    if not IS_WINDOWS:
+        return
+    import time as _time
+
+    def run() -> None:
+        while not (stop and stop.is_set()):
+            try:
+                front = int(_GetForegroundWindow() or 0)
+                if find_host() and (not front or _class(front) in NOBODY_IN_FRONT):
+                    take_foreground(tries=1)
+            except Exception:
+                pass
+            _time.sleep(every)
+
+    threading.Thread(target=run, name="nsgm-keep-in-front", daemon=True).start()
+
+
 # --------------------------------------------------------------------------
 # one program's windows
 # --------------------------------------------------------------------------

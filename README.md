@@ -653,8 +653,22 @@ anything is installed, with the reason shown. Downloads go to
 windows, which a controller over Moonlight cannot click. The store deals
 with each (Windows):
 
+Store installs run the installer silently (`/VERYSILENT`), and Inno Setup
+then runs its after-install entries by itself: the redistributables, and
+the repacker's website (bit.ly/fitgirl-repacks-site). A watcher looks at
+everything the installer starts about forty times a second and stops what
+is not wanted as it starts, before any window shows. A website is
+recognised by the program (a browser) or by a web address in its command
+line (`cmd /c start https://…`, `rundll32 url.dll,…`, `explorer https://…`).
+Stopping a program the installer runs as administrator needs the store to
+run as administrator too. If an installer shows its own pages anyway, the
+unneeded boxes on them are unticked (each once, so a box ticked again by
+hand stays ticked). What each page offered, what was unticked or stopped,
+and what Inno ran after installing go in `installs.log` in the config
+folder.
+
 - **Extras.** DirectX, Visual C++, .NET, PhysX, OpenAL and similar setups
-  the installer starts are stopped as soon as they appear, unless
+  the installer starts are stopped as they start, unless
   *Let installers add DirectX, Visual C++ and other extras* is on. Most
   PCs have them already. A game's page has the same switch for that game,
   set before pressing Install.
@@ -666,8 +680,10 @@ with each (Windows):
 - **The installer's last page.** Its ticked boxes (launch the game,
   visit the repacker's website, read me) run only when Finish is pressed,
   and the installation is complete by then. So when an Inno Setup or NSIS
-  installer reaches that page, the store closes it: nothing there runs,
-  and nothing needs clicking.
+  installer shown with its own pages reaches that page, the store stops it
+  outright: nothing there runs, not even code the installer runs as it
+  exits, and nothing needs clicking. In a silent install the same entries
+  are stopped by the watcher above.
 - **Desktop shortcuts** the installer adds are removed (*No desktop
   shortcuts*, on by default). Shortcuts that were already there are never
   touched.

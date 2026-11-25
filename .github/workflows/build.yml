@@ -321,10 +321,36 @@ jobs:
              release/nonsteam-game-manager-macos.dmg
           cd release && sha256sum * > checksums.txt && cat checksums.txt
 
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: release/*
-          generate_release_notes: true
-          # A tag with a suffix, such as v1.2.0-store.1, is a test build: a
-          # pre-release, which the app's update check never offers.
-          prerelease: ${{ contains(github.ref_name, '-') }}
+      # Published with the gh tool, retrying: GitHub's release API sometimes
+      # answers 500 or 502 for a minute, and a single bad answer used to leave
+      # a release with half its files (v1.2.5). Creating is skipped when the
+      # release already exists, and uploading replaces files of the same
+      # name, so running this again always finishes the job.
+      # A tag with a suffix, such as v1.2.0-store.1, is a test build: a
+      # pre-release, which the app's update check never offers.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags=""
+          case "$TAG" in *-*) flags="--prerelease" ;; esac
+          for attempt in 1 2 3 4 5 6; do
+            if gh release view "$TAG" >/dev/null 2>&1; then break; fi
+            if gh release create "$TAG" --verify-tag --generate-notes $flags; then break; fi
+            echo "Creating the release failed (attempt $attempt); trying again shortly."
+            sleep $((attempt * 15))
+          done
+          gh release view "$TAG" >/dev/null || { echo "::error::The release could not be created."; exit 1; }
+          for attempt in 1 2 3 4 5 6; do
+            if gh release upload "$TAG" release/* --clobber; then
+              echo "All files attached:"
+              gh release view "$TAG" --json assets --jq '.assets[].name'
+              exit 0
+            fi
+            echo "Uploading failed (attempt $attempt); trying again shortly."
+            sleep $((attempt * 20))
+          done
+          echo "::error::The files could not be attached to the release."
+          exit 1

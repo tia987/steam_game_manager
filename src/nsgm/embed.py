@@ -32,6 +32,7 @@ running installer is never destroyed with it.
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 import uuid
@@ -190,6 +191,11 @@ FRAME_EX = (WS_EX_DLGMODALFRAME | WS_EX_TOPMOST | WS_EX_WINDOWEDGE | WS_EX_CLIEN
             | WS_EX_STATICEDGE | WS_EX_APPWINDOW)
 
 # Windows every program has that are never the thing to show.
+# A command window: the installer running a script (repacks edit the hosts
+# file this way, "Applying redirection rules for fake FitGirl sites...").
+CONSOLE_CLASSES = ("ConsoleWindowClass", "CASCADIA_HOSTING_WINDOW_CLASS", "PseudoConsoleWindow")
+QUIET_SETTLE = 1.0        # seconds a silent install's window must stay before it is held
+
 NOT_A_WINDOW = {"IME", "MSCTFIME UI", "tooltips_class32", "#32768", "SysShadow",
                 "GDI+ Hook Window Class", "CicMarshalWndClass", "OleMainThreadWndClass"}
 
@@ -582,6 +588,130 @@ def keep_in_front(every: float = 2.0, stop=None) -> None:
 
 
 # --------------------------------------------------------------------------
+# while a store install runs, and a little after
+# --------------------------------------------------------------------------
+
+# A browser page an installer opened: repacks send their bit.ly link, which
+# shows a Bitly preview and then forwards to the repacker's site.
+INSTALLER_PAGE = re.compile(r"(?i)\bbit\.?ly\b|fitgirl")
+
+
+class Tidy:
+    """Keeps a store install out of sight and the store in front.
+
+    - The installer's console windows are hidden; they keep running. One
+      still open after CONSOLE_PATIENCE seconds is shown again, in case it
+      waits for a key.
+    - One of those consoles, or a browser showing the installer's page,
+      taking the front gets the store put back there. The installer's own
+      windows are never covered, nor a browser someone switched to.
+    - A browser tab that turns to an installer's page (bit.ly, the
+      repacker's site) after the install started is closed with Ctrl+W, the
+      store coming back in front straight after. Only a window whose title
+      changed to such a page since the install began, and only once it is
+      confirmed to be the front window, so a key never lands elsewhere.
+
+    Runs until AFTER seconds past ``stop()``: the page tends to open as the
+    installer exits.
+    """
+
+    EVERY = 0.1
+    AFTER = 20.0
+    CONSOLE_PATIENCE = 45.0
+
+    def __init__(self, tree, is_browser, store_in_front: bool = True):
+        self.tree = tree
+        self.is_browser = is_browser            # executable name -> bool
+        self.store_in_front = store_in_front
+        self.stopped_at = 0.0
+        self.hidden: dict[int, float] = {}
+        self.closed: set = set()
+        self.before: dict[int, str] = {}
+        self.notes: list[str] = []
+
+    def start(self) -> "Tidy":
+        if IS_WINDOWS:
+            self.before = {h: _text(h) for h in _top_level_windows() if _IsWindowVisible(h)}
+            threading.Thread(target=self._run, name="nsgm-install-tidy", daemon=True).start()
+        return self
+
+    def stop(self) -> None:
+        self.stopped_at = self.stopped_at or time.time()
+
+    def _run(self) -> None:
+        names: dict[int, str] = {}
+        while not (self.stopped_at and time.time() - self.stopped_at > self.AFTER):
+            try:
+                self._tick(names)
+            except Exception:
+                pass
+            time.sleep(self.EVERY)
+
+    def _name(self, pid: int, names: dict) -> str:
+        if pid not in names:
+            from . import winproc
+            names.update({p: n for p, (_parent, n) in winproc._snapshot().items()})
+        return names.get(pid, "")
+
+    def _tick(self, names: dict) -> None:
+        live = self.tree.pids() if not self.stopped_at else set()
+        host = find_host()
+        for hwnd in _top_level_windows():
+            if not _IsWindowVisible(hwnd):
+                continue
+            pid = _pid(hwnd)
+            if pid in live and _class(hwnd) in CONSOLE_CLASSES and hwnd not in self.hidden:
+                _ShowWindow(hwnd, SW_HIDE)
+                self.hidden[hwnd] = time.time()
+                self.notes.append(f"Hid the installer's command window “{_text(hwnd)}”.")
+                continue
+            title = _text(hwnd)
+            if (INSTALLER_PAGE.search(title) and (hwnd, title) not in self.closed
+                    and not INSTALLER_PAGE.search(self.before.get(hwnd, ""))
+                    and self.is_browser(self._name(pid, names))):
+                self.closed.add((hwnd, title))
+                if self._close_tab(hwnd, host):
+                    self.notes.append(f"Closed the page the installer opened: “{title}”.")
+        # A console that has been waiting a long time may want a key.
+        for hwnd, when in list(self.hidden.items()):
+            if not _IsWindow(hwnd):
+                self.hidden.pop(hwnd)
+            elif time.time() - when > self.CONSOLE_PATIENCE and when > 0:
+                _ShowWindow(hwnd, SW_SHOWNA)
+                self.hidden[hwnd] = -1.0
+        if host and self.store_in_front:
+            front = int(_GetForegroundWindow() or 0)
+            if front and front != host and not _IsChild(host, front):
+                # Only from what the install itself put there: its console,
+                # or a browser showing its page. Someone switching to their
+                # browser during a long install keeps it.
+                pid = _pid(front)
+                if (pid in live and _class(front) in CONSOLE_CLASSES) or (
+                        INSTALLER_PAGE.search(_text(front))
+                        and self.is_browser(self._name(pid, names))):
+                    take_foreground(tries=1)
+
+    def _close_tab(self, hwnd: int, host: int) -> bool:
+        if _IsIconic(hwnd):
+            _ShowWindow(hwnd, SW_RESTORE)
+        _SetForegroundWindow(hwnd)
+        time.sleep(0.15)
+        if int(_GetForegroundWindow() or 0) != hwnd or not INSTALLER_PAGE.search(_text(hwnd)):
+            if host:
+                take_foreground(tries=2)
+            return False
+        control, w_key, up = 0x11, 0x57, 0x0002
+        _keybd_event(control, 0, 0, None)
+        _keybd_event(w_key, 0, 0, None)
+        _keybd_event(w_key, 0, up, None)
+        _keybd_event(control, 0, up, None)
+        time.sleep(0.2)
+        if host:
+            take_foreground(tries=4)
+        return True
+
+
+# --------------------------------------------------------------------------
 # one program's windows
 # --------------------------------------------------------------------------
 
@@ -606,6 +736,7 @@ class Session:
         self.placed: dict[int, tuple] = {}
         self.started = time.time()
         self.last_focus = 0           # the installer control the controller last selected
+        self.first_seen: dict[int, float] = {}
 
     def to_json(self) -> dict:
         return {"id": self.id, "title": self.title, "kind": self.kind, "task": self.task_id,
@@ -789,6 +920,16 @@ class Manager:
                 continue
             if _class(hwnd) in NOT_A_WINDOW:
                 continue
+            if session.kind == "quiet":
+                # A silent install has nothing to ask. What it shows is a
+                # console running a script, or something flashing past;
+                # only a window that stays up (an error to read, a question)
+                # is brought into the app.
+                if _class(hwnd) in CONSOLE_CLASSES:
+                    continue
+                seen = session.first_seen.setdefault(hwnd, time.time())
+                if time.time() - seen < QUIET_SETTLE:
+                    continue
             owner = _GetWindow(hwnd, GW_OWNER)
             # A visible owner means a dialog or message box sitting on the
             # main window; those float. Delphi programs such as Inno Setup

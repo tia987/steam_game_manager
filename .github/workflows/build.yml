@@ -248,6 +248,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Write-Error "could not build the test installer"; exit 1 }
           python tests\windows\quiet_extras_check.py tests\windows\out\quiet-extras-test.exe "$env:RUNNER_TEMP\quiet-test"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests\windows\tidy_check.py "$env:RUNNER_TEMP\tidy-test"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # The store's behaviour is covered by offline tests with local fake
       # sites, hosts and torrent clients. Linux only: they keep their

@@ -147,6 +147,17 @@ def _record_install(task: "Task") -> None:
         pass
 
 
+def _record_install_notes(task: "Task", notes: list) -> None:
+    """Lines that came after the install's log was written (the tidy-up after it)."""
+    try:
+        path = library.config_dir() / "installs.log"
+        with open(path, "a", encoding="utf-8") as handle:
+            for line in notes:
+                handle.write(f"  (after) {line}\n")
+    except OSError:
+        pass
+
+
 def run_entries(log_text: str) -> list[str]:
     """What an Inno Setup installer ran after installing, from its own log.
 
@@ -926,6 +937,10 @@ class Queue:
             temp_before = winclean.inno_temp_dirs()
             guard = SideGuard(self, task, tree).start()
             options = PageOptions(self, task)
+            # A store install keeps out of sight: consoles hidden, the store
+            # in front, the page the installer opens closed again.
+            tidy = embed.Tidy(tree, lambda name: bool(BROWSERS.match(name or ""))).start() \
+                if task.skip_finish and task.mode == "quiet" else None
             try:
                 while tree.alive():
                     options.check(tree)
@@ -962,6 +977,10 @@ class Queue:
                     time.sleep(0.5)
             finally:
                 guard.stop()
+                if tidy is not None:
+                    tidy.stop()
+                    threading.Thread(target=self._tidy_notes, args=(task, tidy),
+                                     daemon=True).start()
                 if muter is not None:
                     muter.stop()
                 embed.MANAGER.finish(session)
@@ -1061,6 +1080,13 @@ class Queue:
                     task.message = f"Waiting for {item.name} to be free"
                     self._check(task)
                     time.sleep(2)
+
+    def _tidy_notes(self, task: Task, tidy) -> None:
+        """What the tidy-up did, into the install's log, once it has finished."""
+        time.sleep(tidy.AFTER + 1)
+        if tidy.notes:
+            task.log.extend(tidy.notes)
+            _record_install_notes(task, tidy.notes)
 
     def _close_at_finish(self, task: Task, tree, untick_tried: bool) -> tuple[bool, bool]:
         """The installer is on its last page: close it without running anything more.

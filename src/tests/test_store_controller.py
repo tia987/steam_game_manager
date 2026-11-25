@@ -127,6 +127,17 @@ class StreamingTests(unittest.TestCase):
         with mock.patch.object(store, "ADMIN_SKIPPED", True):
             self.assertTrue(store.store_settings({})["admin_skipped"])
 
+    def test_sunshine_command_has_no_spaces_to_lose_on_windows(self):
+        with mock.patch.object(store.os, "name", "nt"), \
+                mock.patch.object(store, "self_command",
+                                  return_value=([__file__.replace("tests", "te sts"), "--store",
+                                                 "--streaming"], "")), \
+                mock.patch.object(store.os.path, "exists", return_value=True), \
+                mock.patch("nsgm.winproc.short_path", return_value="C:\\Users\\MATTIA~1\\nsgm.exe"):
+            command = store.sunshine_command()
+        self.assertTrue(command.startswith("C:\\Users\\MATTIA~1\\nsgm.exe"))
+        self.assertTrue(command.endswith("--store --streaming"))
+
     def test_sunshine_command_opens_the_store(self):
         command = store.sunshine_command()
         self.assertIn("--store", command)

@@ -116,8 +116,19 @@ def started_by_sunshine() -> bool:
 
 
 def sunshine_command() -> str:
-    """The command to give Sunshine for an app that opens just the store."""
+    """The command to give Sunshine for an app that opens just the store.
+
+    It goes in Sunshine's Command field as one line. A path with a space in
+    it (C:\\Users\\Some Name\\...) only works there inside quotes, and a
+    quote lost in copying gives "Failed to start the specified application"
+    in Moonlight. On Windows the program's short 8.3 path has no spaces, so
+    that is shown instead whenever there is one.
+    """
     command, _cwd = self_command("--store", "--streaming")
+    if os.name == "nt":
+        from . import winproc
+        command = [winproc.short_path(part) if (" " in part and os.path.exists(part)) else part
+                   for part in command]
     return subprocess.list2cmdline(command) if os.name == "nt" else " ".join(
         f'"{part}"' if " " in part else part for part in command)
 

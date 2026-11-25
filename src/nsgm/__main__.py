@@ -74,7 +74,13 @@ def main() -> int:
         extra = ["--no-elevate"]
         if streaming:
             extra += ["--streaming", f"--parent-pid={os.getpid()}"]
-        if wanted and winproc.relaunch_elevated(extra, wait=streaming):
+        if wanted and streaming:
+            # Windows' permission prompt would take over the Moonlight stream
+            # and leave the store without input. Sunshine can start the store
+            # with administrator rights itself, without asking: that is the
+            # way when streaming (see the store's Settings).
+            store.ADMIN_SKIPPED = True
+        elif wanted and winproc.relaunch_elevated(extra, wait=streaming):
             return 0
 
     # Clear away the copy the last update left behind. It cannot be
@@ -114,7 +120,9 @@ def main() -> int:
         desktop.run(url, lambda: server.serve(port, open_browser=False), True,
                     on_closing=embed.MANAGER.release_all,
                     fullscreen=args.store and not args.windowed,
-                    title=desktop.STORE_TITLE if args.store else desktop.TITLE)
+                    title=desktop.STORE_TITLE if args.store else desktop.TITLE,
+                    # The store must be the window the controller reaches.
+                    on_shown=embed.take_foreground if args.store else None)
     else:
         server.serve(port, open_browser=True, url=url)
     return 0

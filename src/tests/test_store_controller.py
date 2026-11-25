@@ -119,6 +119,14 @@ class StreamingTests(unittest.TestCase):
         self.assertIn("--steam-background", spawned[0])
         self.assertNotIn("--relaunch-store", spawned[0])
 
+    def test_the_store_window_can_hold_installers(self):
+        from nsgm import desktop, embed
+        self.assertIn(desktop.STORE_TITLE, embed.HOST_TITLES)
+
+    def test_skipped_elevation_is_reported(self):
+        with mock.patch.object(store, "ADMIN_SKIPPED", True):
+            self.assertTrue(store.store_settings({})["admin_skipped"])
+
     def test_sunshine_command_opens_the_store(self):
         command = store.sunshine_command()
         self.assertIn("--store", command)

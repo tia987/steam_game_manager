@@ -967,6 +967,11 @@ function renderSettings() {
   $("optMute").setAttribute("aria-checked", settings.mute_installers !== false ? "true" : "false");
   $("optExtras").setAttribute("aria-checked", settings.extras ? "true" : "false");
   $("optAdmin").setAttribute("aria-checked", settings.run_as_admin ? "true" : "false");
+  $("adminState").textContent = settings.is_admin
+    ? "The store is running as administrator: extra installer windows can be stopped, and installer screens stay inside the store."
+    : settings.admin_skipped
+    ? "Not asked for over Moonlight: Windows' prompt would take over the stream. Turn on Run as administrator for the Game Store app in Sunshine instead (Settings → Moonlight and Sunshine)."
+    : "Repack installers run as administrator, and only a store with the same rights can stop their extra windows and keep their screens inside the store. One Windows prompt when the store opens, instead of one per game. Takes effect next time it opens.";
   $("optNoDesktop").setAttribute("aria-checked", settings.no_desktop_shortcuts !== false ? "true" : "false");
   $("optNoAdmin").setAttribute("aria-checked", settings.clear_run_as_admin !== false ? "true" : "false");
   $("optVerify").setAttribute("aria-checked", settings.verify ? "true" : "false");

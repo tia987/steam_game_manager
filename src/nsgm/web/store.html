@@ -98,10 +98,15 @@
         <p class="group__lede" id="streamState"></p>
         <p class="label">Command for a “Game Store” app in Sunshine</p>
         <p class="command" id="sunshineCommand"></p>
-        <p class="line__sub">In Sunshine's web page: Applications → Add new, any name, this as the
-          Command, and leave Detached Commands empty. Leaving the store then ends that stream, so you
-          can start your Steam app in Moonlight straight after. Quitting the app from Moonlight closes
-          the store too.</p>
+        <ol class="steps">
+          <li>In Sunshine's web page: Applications → Add New, any name.</li>
+          <li>Put the line above in <b>Command</b>. Not in Detached Commands: Sunshine lets those run
+            on their own, so quitting from Moonlight would leave the store open.</li>
+          <li>Turn on <b>Run as administrator</b> (Elevated) there. Sunshine then starts the store with
+            those rights itself, with no Windows prompt to take over the stream.</li>
+        </ol>
+        <p class="line__sub">Leaving the store then ends that stream, so you can start your Steam app in
+          Moonlight straight after, and quitting the app from Moonlight closes the store too.</p>
       </div>
 
       <div class="group">

@@ -483,10 +483,16 @@ mouse.
   your library, with its own artwork, so it opens from Big Picture like
   any game.
 - **From Sunshine, as its own Moonlight app.** In Sunshine's web page,
-  Applications → Add new, with the command
-  `nonsteam-game-manager --store --streaming` (the store's Settings →
-  *Moonlight and Sunshine* shows the exact line for your PC) and no
-  detached commands. Then:
+  Applications → Add New, put `nonsteam-game-manager --store --streaming`
+  (the store's Settings → *Moonlight and Sunshine* shows the exact line
+  for your PC) in **Command**, not in Detached Commands: Sunshine starts
+  detached commands and forgets them, so quitting from Moonlight would
+  leave the store running. Turn on the app's **elevated** (run as
+  administrator) option there too: Sunshine, running as a service, then
+  starts the store with administrator rights itself, without a Windows
+  prompt. The store never asks for the rights itself while streaming,
+  even with *Run the store as administrator* on, because the prompt would
+  take over the stream and leave the store without input. Then:
   - **Leave** closes the store completely, which ends that stream, so you
     can start your Steam app in Moonlight right after. Quitting the app
     from Moonlight's menu closes the store as well.

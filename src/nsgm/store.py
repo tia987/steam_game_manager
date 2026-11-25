@@ -102,6 +102,10 @@ STORE_WINDOW = False
 # and closing it - Leave - is what ends the stream.
 STREAMING = False
 
+# Set when "run as administrator" is on but was not acted on, because the
+# permission prompt would have taken over a Moonlight stream.
+ADMIN_SKIPPED = False
+
 
 def started_by_sunshine() -> bool:
     """Sunshine started this, as an app of its own rather than through Steam."""
@@ -2508,6 +2512,7 @@ def store_settings(settings: dict | None = None) -> dict:
         "mute_installers": settings.get("mute_installers", True) is not False,
         "no_desktop_shortcuts": settings.get("no_desktop_shortcuts", True) is not False,
         "run_as_admin": bool(settings.get("run_as_admin")),
+        "admin_skipped": ADMIN_SKIPPED,
         "is_admin": _running_as_admin(),
         "clear_run_as_admin": settings.get("clear_run_as_admin", True) is not False,
         "extras": bool(settings.get("store_extras")),

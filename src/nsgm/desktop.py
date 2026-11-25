@@ -46,7 +46,7 @@ def _open_browser(url: str) -> None:
 
 
 def run(url: str, serve, prefer_window: bool = True, on_closing=None,
-        fullscreen: bool = False, title: str = TITLE) -> None:
+        fullscreen: bool = False, title: str = TITLE, on_shown=None) -> None:
     """Start the server, then show the interface.
 
     ``serve`` is called on a background thread. The window has to own the
@@ -87,6 +87,13 @@ def run(url: str, serve, prefer_window: bool = True, on_closing=None,
                 window.events.closing += closing
             except AttributeError:
                 pass                     # an old pywebview without events
+        if on_shown is not None:
+            def shown():
+                threading.Thread(target=on_shown, daemon=True).start()
+            try:
+                window.events.shown += shown
+            except AttributeError:
+                pass
         webview.start()
         # Closing the window ends the program. The server runs on a daemon
         # thread, but a background job mid-flight can keep the process alive

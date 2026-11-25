@@ -38,6 +38,9 @@ import uuid
 
 IS_WINDOWS = os.name == "nt"
 HOST_TITLE = "Non-Steam Game Manager"
+# The store's full-screen window has a title of its own; it holds installer
+# windows just the same.
+HOST_TITLES = (HOST_TITLE, "Game Store")
 
 # Set by the server when the interface runs in the app's own window. In a
 # browser tab there is no window of ours to hold anything.
@@ -79,6 +82,10 @@ if IS_WINDOWS:
                            ctypes.c_int, ctypes.c_int, wintypes.UINT], wintypes.BOOL)
     _ShowWindow = _bind("ShowWindow", [wintypes.HWND, ctypes.c_int], wintypes.BOOL)
     _SetForegroundWindow = _bind("SetForegroundWindow", [wintypes.HWND], wintypes.BOOL)
+    _GetForegroundWindow = _bind("GetForegroundWindow", [], wintypes.HWND)
+    _BringWindowToTop = _bind("BringWindowToTop", [wintypes.HWND], wintypes.BOOL)
+    _keybd_event = _bind("keybd_event", [wintypes.BYTE, wintypes.BYTE, wintypes.DWORD,
+                                         ctypes.c_void_p], None)
 
     # -- driving a held installer from a controller ---------------------------
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -234,13 +241,43 @@ def find_host() -> int:
         return 0
     me = os.getpid()
     for hwnd in _top_level_windows():
-        if _pid(hwnd) == me and _IsWindowVisible(hwnd) and _text(hwnd) == HOST_TITLE:
+        if _pid(hwnd) == me and _IsWindowVisible(hwnd) and _text(hwnd) in HOST_TITLES:
             return hwnd
     return 0
 
 
 def available() -> bool:
     return IS_WINDOWS and ENABLED
+
+
+def take_foreground(tries: int = 20, pause: float = 0.25) -> bool:
+    """Bring the app's own window to the front, and keep trying for a few seconds.
+
+    Over Moonlight the store window has to be the foreground window: that
+    is the one the controller, the phone's keyboard and touches reach. A
+    program started by a service (Sunshine), or straight after Windows'
+    permission prompt, is not allowed to take the foreground by itself;
+    a tap of Alt first, which is what Windows checks for, lets it.
+    """
+    if not IS_WINDOWS:
+        return False
+    import time as _time
+    for _ in range(tries):
+        host = find_host()
+        if host:
+            if _IsIconic(host):
+                _ShowWindow(host, SW_RESTORE)
+            if int(_GetForegroundWindow() or 0) == host:
+                return True
+            _BringWindowToTop(host)
+            if not _SetForegroundWindow(host):
+                _keybd_event(0x12, 0, 0, None)          # Alt down
+                _keybd_event(0x12, 0, 0x0002, None)     # Alt up
+                _SetForegroundWindow(host)
+            if int(_GetForegroundWindow() or 0) == host:
+                return True
+        _time.sleep(pause)
+    return False
 
 
 # --------------------------------------------------------------------------
